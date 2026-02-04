@@ -38,6 +38,14 @@ export const TOOLS: Tool[] = [
                     },
                     required: ["staff_name", "visitor_name"]
                 } as any
+            },
+            {
+                name: "end_interaction",
+                description: "Call this tool to end the conversation and reset the kiosk interface.",
+                parameters: {
+                    type: "OBJECT",
+                    properties: {},
+                } as any
             }
         ]
     }

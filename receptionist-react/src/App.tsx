@@ -42,32 +42,33 @@ function ReceptionistApp() {
 
   // Initial Configuration
   useEffect(() => {
-    // Set Model
-    setModel("models/gemini-2.5-flash-native-audio-preview-12-2025");
+    // STRICT ALIGNMENT: Gemini 2.5 Preview + Flattened Config
+    const modelId = "models/gemini-2.5-flash-native-audio-preview-12-2025";
+    setModel(modelId);
 
-    // Set Config (Tools, System Prompt, Generation Config)
     setConfig({
-      generationConfig: {
-        responseModalities: "AUDIO",
-        speechConfig: {
-          voiceConfig: {
-            prebuiltVoiceConfig: {
-              voiceName: "Puck",
-            },
+      model: modelId,
+      responseModalities: "AUDIO",
+      speechConfig: {
+        voiceConfig: {
+          prebuiltVoiceConfig: {
+            voiceName: "Puck",
           },
         },
-      } as any,
-      matchConfig: {
-        tools: TOOLS,
-        systemInstruction: {
-          parts: [{ text: RECEPTIONIST_PERSONA.systemInstruction }],
-        }
-      } as any
-      // Note: 'matchConfig' isn't standard, checking if SDK expects tools at root level of config or special place.
-      // Usually defaults in Python SDK are 'tools' at root. TS SDK might strictly allow it.
-      // Let's try root level casting to 'any' for the config object to be safe.
+      },
+      systemInstruction: {
+        parts: [{ text: RECEPTIONIST_PERSONA.systemInstruction }],
+      },
     } as any);
   }, [setConfig, setModel]);
+
+  // AUTO-GREETING
+  useEffect(() => {
+    if (connected) {
+      // Force the model to speak first
+      client.send([{ text: "The user is here. Greet them immediately." }]);
+    }
+  }, [connected, client]);
 
   // Handle Tool Calls
   useEffect(() => {
@@ -93,9 +94,30 @@ function ReceptionistApp() {
               ? { is_returning: true, last_visit: visitor.timestamp, name: visitor.name }
               : { is_returning: false };
           } else if (name === "notify_staff") {
-            // Simulate notification
-            await new Promise((resolve) => setTimeout(resolve, 1000));
-            result = { status: "notified", message: `${args.staff_name} notified` };
+            console.log("Waiting for approval...");
+            // Simulate approval delay (5 seconds + 1s buffer)
+            await new Promise((resolve) => setTimeout(resolve, 6000));
+            result = { status: "approved", message: "Approval granted by " + args.staff_name };
+          } else if (name === "end_interaction") {
+            // Wait 5 seconds for the final spoken response to play out, then disconnect
+            console.log("Interaction ended. Resetting in 5 seconds...");
+            setTimeout(() => {
+              client.disconnect();
+              setVideoStream(null); // Reset video stream if needed
+            }, 6000);
+            result = { status: "success", message: "Resetting kiosk." };
+          } else if (name === "capture_photo") {
+            if (videoRef.current) {
+              const canvas = document.createElement("canvas");
+              canvas.width = videoRef.current.videoWidth;
+              canvas.height = videoRef.current.videoHeight;
+              canvas.getContext("2d")?.drawImage(videoRef.current, 0, 0);
+              const dataUrl = canvas.toDataURL("image/jpeg");
+              console.log("Photo Captured:", dataUrl.substring(0, 50) + "...");
+              result = { status: "success", message: "Photo captured successfully." };
+            } else {
+              result = { status: "error", message: "Camera not available." };
+            }
           }
         } catch (e: any) {
           result = { error: e.message };
@@ -138,9 +160,26 @@ function ReceptionistApp() {
             videoRef={videoRef}
             supportsVideo={true}
             onVideoStreamChange={setVideoStream}
-            enableEditingSettings={false} // Hide settings to keep it simple
+            enableEditingSettings={false}
           >
           </ControlTray>
+
+          {/* Hidden video element for capture, or visible for preview */}
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            muted
+            style={{
+              position: "absolute",
+              bottom: "80px",
+              right: "20px",
+              width: "200px",
+              borderRadius: "10px",
+              border: "2px solid #555",
+              display: videoStream ? "block" : "none" // Only show when stream is active
+            }}
+          />
         </div>
       </main>
     </div>

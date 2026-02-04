@@ -61,15 +61,17 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
 
   useEffect(() => {
     const onOpen = () => {
+      console.log("Connection opened");
       setConnected(true);
     };
 
     const onClose = () => {
+      console.log("Connection closed");
       setConnected(false);
     };
 
     const onError = (error: ErrorEvent) => {
-      console.error("error", error);
+      console.error("Connection error", error);
     };
 
     const stopAudioStreamer = () => audioStreamerRef.current?.stop();
@@ -96,11 +98,19 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
   }, [client]);
 
   const connect = useCallback(async () => {
+    console.log("Connect callback initiated", { model, config });
     if (!config) {
+      console.error("Config not set!");
       throw new Error("config has not been set");
     }
     client.disconnect();
-    await client.connect(model, config);
+    try {
+      console.log("Calling client.connect...");
+      await client.connect(model, config);
+      console.log("client.connect returned");
+    } catch (e) {
+      console.error("Error during client.connect:", e);
+    }
   }, [client, config, model]);
 
   const disconnect = useCallback(async () => {
