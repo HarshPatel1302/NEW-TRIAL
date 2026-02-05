@@ -19,7 +19,6 @@ import "./App.scss";
 import { LiveAPIProvider, useLiveAPIContext } from "./contexts/LiveAPIContext";
 import { Altair } from "./components/altair/Altair";
 import ControlTray from "./components/control-tray/ControlTray";
-import cn from "classnames";
 import { LiveClientOptions } from "./types";
 import { RECEPTIONIST_PERSONA } from "./receptionist/config";
 import { TOOLS } from "./receptionist/tools";
@@ -38,7 +37,7 @@ function ReceptionistApp() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [videoStream, setVideoStream] = useState<MediaStream | null>(null);
   // Add setModel to destructuring
-  const { client, setConfig, setModel, connected, connect } = useLiveAPIContext();
+  const { client, setConfig, setModel, connected } = useLiveAPIContext();
 
   // Initial Configuration
   useEffect(() => {
@@ -59,6 +58,7 @@ function ReceptionistApp() {
       systemInstruction: {
         parts: [{ text: RECEPTIONIST_PERSONA.systemInstruction }],
       },
+      tools: TOOLS,
     } as any);
   }, [setConfig, setModel]);
 
@@ -69,6 +69,14 @@ function ReceptionistApp() {
       client.send([{ text: "The user is here. Greet them immediately." }]);
     }
   }, [connected, client]);
+
+  // Conversation state for slot-filling
+  const [conversationState, setConversationState] = useState<{
+    intent?: string;
+    collectedSlots: Record<string, string>;
+  }>({
+    collectedSlots: {}
+  });
 
   // Handle Tool Calls
   useEffect(() => {
@@ -81,32 +89,126 @@ function ReceptionistApp() {
         const { name, args } = fc;
 
         try {
-          if (name === "save_visitor_info") {
-            const visitor = DatabaseManager.saveVisitor({
+          if (name === "classify_intent") {
+            // Record the detected intent
+            setConversationState(prev => ({
+              ...prev,
+              intent: args.detected_intent
+            }));
+            result = {
+              status: "success",
+              intent: args.detected_intent,
+              message: `Intent classified as ${args.detected_intent}`
+            };
+            console.log(`Intent classified: ${args.detected_intent}`);
+          }
+          else if (name === "collect_slot_value") {
+            // Track collected slot values
+            setConversationState(prev => ({
+              ...prev,
+              collectedSlots: {
+                ...prev.collectedSlots,
+                [args.slot_name]: args.value
+              }
+            }));
+            result = {
+              status: "success",
+              slot: args.slot_name,
+              value: args.value
+            };
+            console.log(`Collected slot: ${args.slot_name} = ${args.value}`);
+          }
+          else if (name === "save_visitor_info") {
+            const visitor = await DatabaseManager.saveVisitor({
               name: args.name,
-              phone: args.phone,
-              meetingWith: args.meeting_with,
+              phone: args.phone || conversationState.collectedSlots.phone || "N/A",
+              meetingWith: args.meeting_with || conversationState.collectedSlots.person_to_meet || "N/A",
+              intent: args.intent || conversationState.intent || "unknown",
+              department: args.department,
+              purpose: args.purpose,
+              company: args.company,
+              appointmentTime: args.appointment_time,
+              referenceId: args.reference_id,
+              notes: args.notes
             });
             result = { status: "success", visitor_id: visitor.id };
-          } else if (name === "check_returning_visitor") {
+            console.log("Visitor saved:", visitor);
+          }
+          else if (name === "check_returning_visitor") {
             const visitor = DatabaseManager.findByPhone(args.phone);
             result = visitor
               ? { is_returning: true, last_visit: visitor.timestamp, name: visitor.name }
               : { is_returning: false };
-          } else if (name === "notify_staff") {
+          }
+          else if (name === "route_to_department") {
+            result = {
+              status: "success",
+              department: args.department,
+              message: `Routing ${args.visitor_name} to ${args.department} for ${args.intent}`
+            };
+            console.log(`Routed to ${args.department}:`, args);
+          }
+          else if (name === "request_approval") {
+            console.log("Requesting approval...");
+            // Simulate approval request with delay
+            await new Promise((resolve) => setTimeout(resolve, 3000));
+            result = {
+              status: "approved",
+              message: `Approval granted for ${args.visitor_name}`
+            };
+            console.log("Approval granted");
+          }
+          else if (name === "check_staff_availability") {
+            // Simulate staff availability check
+            // In production, this would check a real calendar/availability system
+            const isAvailable = Math.random() > 0.3; // 70% available
+            result = {
+              available: isAvailable,
+              staff_name: args.staff_name,
+              message: isAvailable
+                ? `${args.staff_name} is available`
+                : `${args.staff_name} is currently unavailable`
+            };
+            console.log(`Staff availability: ${args.staff_name} - ${isAvailable ? 'Available' : 'Unavailable'}`);
+          }
+          else if (name === "notify_staff") {
             console.log("Waiting for approval...");
             // Simulate approval delay (5 seconds + 1s buffer)
             await new Promise((resolve) => setTimeout(resolve, 6000));
             result = { status: "approved", message: "Approval granted by " + args.staff_name };
-          } else if (name === "end_interaction") {
+          }
+          else if (name === "log_delivery") {
+            console.log("Logging delivery:", args);
+            // In production, this would save to a delivery log system
+            // For now, we'll save it to the visitor database
+            await DatabaseManager.saveVisitor({
+              name: `Delivery from ${args.company}`,
+              phone: "N/A",
+              meetingWith: args.recipient || "N/A",
+              intent: "delivery",
+              department: args.department,
+              purpose: "Delivery",
+              company: args.company,
+              referenceId: args.tracking_number,
+              notes: args.description
+            });
+            result = {
+              status: "success",
+              message: `Delivery logged for ${args.department}`
+            };
+          }
+          else if (name === "end_interaction") {
             // Wait 5 seconds for the final spoken response to play out, then disconnect
             console.log("Interaction ended. Resetting in 5 seconds...");
             setTimeout(() => {
               client.disconnect();
               setVideoStream(null); // Reset video stream if needed
+              // Reset conversation state
+              setConversationState({ collectedSlots: {} });
             }, 6000);
             result = { status: "success", message: "Resetting kiosk." };
-          } else if (name === "capture_photo") {
+          }
+          else if (name === "capture_photo") {
             if (videoRef.current) {
               const canvas = document.createElement("canvas");
               canvas.width = videoRef.current.videoWidth;
@@ -137,7 +239,7 @@ function ReceptionistApp() {
     return () => {
       client.off("toolcall", onToolCall);
     };
-  }, [client]);
+  }, [client, conversationState]);
 
   return (
     <div className="App" style={{ background: 'linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)' }}>
