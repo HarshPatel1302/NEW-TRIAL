@@ -25,6 +25,12 @@ const ANIMATION_FILES = {
     bow: '/models/receptionist/formal_bow.glb',
 };
 
+// Preload all assets immediately (before component mounts)
+// This starts downloading resources in parallel for faster perceived load time
+Object.values(ANIMATION_FILES).forEach(path => {
+    useLoader.preload(GLTFLoader, path);
+});
+
 export const AvatarModelMultiFile = forwardRef<AvatarModelRef, AvatarModelProps>((props, ref) => {
     const { speechText: propsSpeechText, isAudioPlaying = false } = props;
     const group = useRef<THREE.Group>(null);
@@ -37,6 +43,7 @@ export const AvatarModelMultiFile = forwardRef<AvatarModelRef, AvatarModelProps>
     const [actions, setActions] = useState<Record<string, THREE.AnimationAction>>({});
     const [currentAction, setCurrentAction] = useState<THREE.AnimationAction | null>(null);
     const [headMesh, setHeadMesh] = useState<THREE.Mesh | null>(null);
+    const [headBone, setHeadBone] = useState<THREE.Bone | null>(null);
     const [morphIndices, setMorphIndices] = useState<Record<string, number>>({});
     const [speechBubbleText, setSpeechBubbleText] = useState<string>('');
 
@@ -99,7 +106,7 @@ export const AvatarModelMultiFile = forwardRef<AvatarModelRef, AvatarModelProps>
 
         console.log('✓ Animations loaded:', Object.keys(newActions));
 
-        // Find mesh with morph targets
+        // Find mesh with morph targets AND head bone for tracking
         baseGltf.scene.traverse((obj: any) => {
             if (obj.isMesh && obj.morphTargetDictionary) {
                 setHeadMesh(obj);
@@ -113,6 +120,12 @@ export const AvatarModelMultiFile = forwardRef<AvatarModelRef, AvatarModelProps>
 
                 console.log('✓ Morph targets found:', Object.keys(obj.morphTargetDictionary));
             }
+
+            // Find head or neck bone for tracking
+            if (obj.isBone && (obj.name.toLowerCase().includes('head') || obj.name.toLowerCase().includes('neck'))) {
+                setHeadBone(obj);
+                console.log('✓ Head bone found:', obj.name);
+            }
         });
 
         // Add base scene to group
@@ -124,13 +137,19 @@ export const AvatarModelMultiFile = forwardRef<AvatarModelRef, AvatarModelProps>
         }
 
         // Handle animation finished events
-        newMixer.addEventListener('finished', (e: any) => {
+        const onFinished = (e: any) => {
             if (newActions.idle && currentAction !== newActions.idle) {
                 playAction('idle');
             }
-        });
+        };
 
-    }, [gltfs]);
+        newMixer.addEventListener('finished', onFinished);
+
+        return () => {
+            newMixer.removeEventListener('finished', onFinished);
+        };
+
+    }, [gltfs, currentAction]); // playAction removed to avoid circular dependency
 
     // Play animation function
     const playAction = (name: string, options?: { loop?: boolean; duration?: number }) => {
@@ -183,7 +202,6 @@ export const AvatarModelMultiFile = forwardRef<AvatarModelRef, AvatarModelProps>
     }));
 
     // Animation loop
-    const clock = useRef(new THREE.Clock());
     useFrame((state, delta) => {
         // Update mixer
         if (mixer) {
@@ -191,6 +209,38 @@ export const AvatarModelMultiFile = forwardRef<AvatarModelRef, AvatarModelProps>
         }
 
         const time = state.clock.getElapsedTime();
+
+        // === HEAD TRACKING (Look at Camera) ===
+        if (headBone && group.current) {
+            const camera = state.camera.position;
+            const avatarPos = group.current.position;
+
+            // Calculate angle to camera (horizontal rotation)
+            const xDiff = camera.x - avatarPos.x;
+            const zDiff = camera.z - avatarPos.z;
+            let angleY = Math.atan2(xDiff, zDiff);
+
+            // Clamp rotation to prevent "Exorcist neck" (-60° to +60°)
+            const MAX_TURN = 1.0; // ~60 degrees in radians
+            angleY = Math.max(-MAX_TURN, Math.min(MAX_TURN, angleY));
+
+            // Smooth interpolation (lerp) for natural movement
+            headBone.rotation.y = THREE.MathUtils.lerp(
+                headBone.rotation.y,
+                angleY,
+                0.1 // 10% per frame = smooth lag effect
+            );
+
+            // Optional: Vertical tilt (look up/down)
+            const yDiff = camera.y - avatarPos.y - 1.5; // 1.5 = approx head height
+            let angleX = Math.atan2(yDiff, Math.sqrt(xDiff ** 2 + zDiff ** 2));
+            angleX = Math.max(-0.5, Math.min(0.5, angleX)); // Clamp up/down
+            headBone.rotation.x = THREE.MathUtils.lerp(
+                headBone.rotation.x,
+                angleX,
+                0.1
+            );
+        }
 
         // === MORPH TARGET ANIMATIONS ===
         if (headMesh && morphIndices) {

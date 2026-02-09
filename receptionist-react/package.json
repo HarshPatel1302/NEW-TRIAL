@@ -3,6 +3,8 @@
   "version": "0.1.0",
   "dependencies": {
     "@google/genai": "^0.14.0",
+    "@react-three/drei": "^9.114.3",
+    "@react-three/fiber": "^8.17.10",
     "classnames": "^2.5.1",
     "dotenv-flow": "^4.1.0",
     "eventemitter3": "^5.0.1",
@@ -14,6 +16,7 @@
     "react-select": "^5.8.3",
     "react-syntax-highlighter": "^15.6.1",
     "sass": "^1.80.6",
+    "three": "^0.182.0",
     "vega": "^5.30.0",
     "vega-embed": "^6.29.0",
     "vega-lite": "^5.22.0",

@@ -1,7 +1,7 @@
-import React, { Suspense, useRef, useImperativeHandle, forwardRef } from 'react';
+import React, { Suspense, useRef } from 'react';
 import { Canvas } from '@react-three/fiber';
-import { OrbitControls, Environment } from '@react-three/drei';
-import { AvatarModelMultiFile as AvatarModel, AvatarModelRef } from './AvatarModelMultiFile';
+import { Environment } from '@react-three/drei';
+import { AvatarModelUnified as AvatarModel, AvatarModelRef } from './AvatarModelUnified';
 import { LoadingScreen } from './LoadingScreen';
 import './Avatar3D.css';
 
@@ -36,6 +36,9 @@ export const Avatar3D = React.forwardRef<Avatar3DRef, Avatar3DProps>((props, ref
 
     return (
         <div className="avatar-container">
+            {/* Loading screen renders OUTSIDE Canvas (HTML/CSS overlay) */}
+            <LoadingScreen />
+
             <Canvas
                 camera={{
                     position: [0, 0.5, 3.5],  // Moved back to see more
@@ -58,7 +61,8 @@ export const Avatar3D = React.forwardRef<Avatar3DRef, Avatar3DProps>((props, ref
                 {/* HDR environment for realistic reflections */}
                 <Environment preset="city" />
 
-                <Suspense fallback={<LoadingScreen />}>
+                {/* Suspense fallback must be null or a THREE.js object */}
+                <Suspense fallback={null}>
                     <AvatarModel ref={avatarRef} speechText={speechText} isAudioPlaying={isAudioPlaying} />
                 </Suspense>
             </Canvas>
