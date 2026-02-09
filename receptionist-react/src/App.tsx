@@ -17,7 +17,7 @@
 import { useRef, useState, useEffect } from "react";
 import "./App.scss";
 import { LiveAPIProvider, useLiveAPIContext } from "./contexts/LiveAPIContext";
-import { Altair } from "./components/altair/Altair";
+import Avatar3D, { Avatar3DRef } from "./components/Avatar3D/Avatar3D";
 import ControlTray from "./components/control-tray/ControlTray";
 import { LiveClientOptions } from "./types";
 import { RECEPTIONIST_PERSONA } from "./receptionist/config";
@@ -35,7 +35,11 @@ const apiOptions: LiveClientOptions = {
 
 function ReceptionistApp() {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const avatarRef = useRef<Avatar3DRef>(null);
   const [videoStream, setVideoStream] = useState<MediaStream | null>(null);
+  const [lastAudioText, setLastAudioText] = useState<string>("");
+  const [isAudioPlaying, setIsAudioPlaying] = useState(false);
+  const audioPlaybackTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   // Add setModel to destructuring
   const { client, setConfig, setModel, connected } = useLiveAPIContext();
 
@@ -65,10 +69,49 @@ function ReceptionistApp() {
   // AUTO-GREETING
   useEffect(() => {
     if (connected) {
+      // Trigger wave animation on connection
+      avatarRef.current?.playAnimation('waving', { loop: false, duration: 2 });
+
       // Force the model to speak first
       client.send([{ text: "The user is here. Greet them immediately." }]);
     }
   }, [connected, client]);
+
+  // AUDIO PLAYBACK TRACKING FOR ANIMATIONS
+  useEffect(() => {
+    const onAudioStart = () => {
+      setIsAudioPlaying(true);
+      avatarRef.current?.playAnimation('talking', { loop: true });
+    };
+
+    const onAudioChunk = () => {
+      // Reset timeout on each audio chunk
+      if (audioPlaybackTimeoutRef.current) {
+        clearTimeout(audioPlaybackTimeoutRef.current);
+      }
+
+      // Set audio to playing if not already
+      if (!isAudioPlaying) {
+        setIsAudioPlaying(true);
+        avatarRef.current?.playAnimation('talking', { loop: true });
+      }
+
+      // If no more audio comes for 500ms, consider audio ended
+      audioPlaybackTimeoutRef.current = setTimeout(() => {
+        setIsAudioPlaying(false);
+        avatarRef.current?.playAnimation('idle', { loop: true });
+      }, 500);
+    };
+
+    client.on('audio', onAudioChunk);
+
+    return () => {
+      client.off('audio', onAudioChunk);
+      if (audioPlaybackTimeoutRef.current) {
+        clearTimeout(audioPlaybackTimeoutRef.current);
+      }
+    };
+  }, [client, isAudioPlaying]);
 
   // Conversation state for slot-filling
   const [conversationState, setConversationState] = useState<{
@@ -95,6 +138,16 @@ function ReceptionistApp() {
               ...prev,
               intent: args.detected_intent
             }));
+
+            // Trigger avatar gestures based on intent
+            if (args.detected_intent === 'sales_inquiry' || args.detected_intent === 'first_time_visit') {
+              avatarRef.current?.playAnimation('waving', { loop: false, duration: 2 });
+            }
+            // Confirmation gestures
+            if (args.detected_intent === 'meeting_request' || args.detected_intent === 'appointment') {
+              avatarRef.current?.playAnimation('nodYes', { loop: false, duration: 1.5 });
+            }
+
             result = {
               status: "success",
               intent: args.detected_intent,
@@ -141,6 +194,8 @@ function ReceptionistApp() {
               : { is_returning: false };
           }
           else if (name === "route_to_department") {
+            // Trigger pointing animation for directions
+            avatarRef.current?.playAnimation('pointing', { loop: false, duration: 2 });
             result = {
               status: "success",
               department: args.department,
@@ -198,6 +253,8 @@ function ReceptionistApp() {
             };
           }
           else if (name === "end_interaction") {
+            // Trigger bow animation for goodbye
+            avatarRef.current?.playAnimation('bow', { loop: false, duration: 3 });
             // Wait 5 seconds for the final spoken response to play out, then disconnect
             console.log("Interaction ended. Resetting in 5 seconds...");
             setTimeout(() => {
@@ -250,8 +307,8 @@ function ReceptionistApp() {
             Greenscape Receptionist
           </h1>
 
-          <div style={{ margin: '40px 0', transform: 'scale(1.5)' }}>
-            <Altair />
+          <div style={{ margin: '40px 0', width: '100%' }}>
+            <Avatar3D ref={avatarRef} connected={connected} speechText={lastAudioText} isAudioPlaying={isAudioPlaying} />
           </div>
 
           <div style={{ color: '#aaa', marginBottom: 20 }}>
