@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-import { useRef, useState, useEffect } from "react";
+import { useRef, useState, useEffect, useCallback } from "react";
 import "./App.scss";
 import { LiveAPIProvider, useLiveAPIContext } from "./contexts/LiveAPIContext";
 import Avatar3D, { Avatar3DRef } from "./components/Avatar3D/Avatar3D";
@@ -23,6 +23,7 @@ import { LiveClientOptions } from "./types";
 import { RECEPTIONIST_PERSONA } from "./receptionist/config";
 import { TOOLS } from "./receptionist/tools";
 import { DatabaseManager } from "./receptionist/database";
+import { GestureController } from "./components/Avatar3D/gesture-controller";
 
 const API_KEY = process.env.REACT_APP_GEMINI_API_KEY as string;
 if (typeof API_KEY !== "string") {
@@ -39,13 +40,41 @@ function ReceptionistApp() {
   const [videoStream, setVideoStream] = useState<MediaStream | null>(null);
   const [lastAudioText, setLastAudioText] = useState<string>("");
   const [isAudioPlaying, setIsAudioPlaying] = useState(false);
-  const audioPlaybackTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  // Add setModel to destructuring
-  const { client, setConfig, setModel, connected } = useLiveAPIContext();
 
-  // Initial Configuration
+  const { client, setConfig, setModel, connected, lipSyncRef } = useLiveAPIContext();
+
+  // ── Gesture Controller ────────────────────────────────────────────
+  const gestureControllerRef = useRef<GestureController | null>(null);
+
+  // Stable callback ref for playAnimation (avoids recreating controller)
+  const playAnimationRef = useRef<Avatar3DRef['playAnimation'] | null>(null);
   useEffect(() => {
-    // STRICT ALIGNMENT: Gemini 2.5 Preview + Flattened Config
+    playAnimationRef.current = (name: string, options?: { loop?: boolean; duration?: number }) => {
+      avatarRef.current?.playAnimation(name, options);
+    };
+  });
+
+  // Create gesture controller once
+  useEffect(() => {
+    gestureControllerRef.current = new GestureController(
+      (name, options) => playAnimationRef.current?.(name, options)
+    );
+    return () => {
+      gestureControllerRef.current?.destroy();
+    };
+  }, []);
+
+  // Helper to fire gesture events
+  const fireGesture = useCallback((gesture: string, duration?: number) => {
+    gestureControllerRef.current?.handleEvent({
+      type: 'gesture',
+      gesture: gesture as any,
+      duration,
+    });
+  }, []);
+
+  // ── Initial Configuration ─────────────────────────────────────────
+  useEffect(() => {
     const modelId = "models/gemini-2.5-flash-native-audio-preview-12-2025";
     setModel(modelId);
 
@@ -55,7 +84,7 @@ function ReceptionistApp() {
       speechConfig: {
         voiceConfig: {
           prebuiltVoiceConfig: {
-            voiceName: "Puck",
+            voiceName: "Algenib",
           },
         },
       },
@@ -66,50 +95,41 @@ function ReceptionistApp() {
     } as any);
   }, [setConfig, setModel]);
 
-  // AUTO-GREETING
+  // ── AUTO-GREETING ─────────────────────────────────────────────────
   useEffect(() => {
     if (connected) {
-      // Trigger wave animation on connection
-      avatarRef.current?.playAnimation('waving', { loop: false, duration: 2 });
-
-      // Force the model to speak first
+      fireGesture('waving', 2);
       client.send([{ text: "The user is here. Greet them immediately." }]);
     }
-  }, [connected, client]);
+  }, [connected, client, fireGesture]);
 
-  // AUDIO PLAYBACK TRACKING FOR ANIMATIONS
+  // ── AUDIO PLAYBACK TRACKING → Gesture Controller ──────────────────
   useEffect(() => {
-    const onAudioStart = () => {
-      setIsAudioPlaying(true);
-      avatarRef.current?.playAnimation('talking', { loop: true });
-    };
-
     const onAudioChunk = () => {
-      // Reset timeout on each audio chunk
-      if (audioPlaybackTimeoutRef.current) {
-        clearTimeout(audioPlaybackTimeoutRef.current);
-      }
-
-      // Set audio to playing if not already
       if (!isAudioPlaying) {
         setIsAudioPlaying(true);
-        avatarRef.current?.playAnimation('talking', { loop: true });
+        gestureControllerRef.current?.handleEvent({ type: 'audioStart' });
       }
+    };
 
-      // If no more audio comes for 500ms, consider audio ended
-      audioPlaybackTimeoutRef.current = setTimeout(() => {
-        setIsAudioPlaying(false);
-        avatarRef.current?.playAnimation('idle', { loop: true });
-      }, 500);
+    const onTurnComplete = () => {
+      setIsAudioPlaying(false);
+      gestureControllerRef.current?.handleEvent({ type: 'audioStop' });
+    };
+
+    const onInterrupted = () => {
+      setIsAudioPlaying(false);
+      gestureControllerRef.current?.handleEvent({ type: 'audioStop' });
     };
 
     client.on('audio', onAudioChunk);
+    client.on('turncomplete', onTurnComplete);
+    client.on('interrupted', onInterrupted);
 
     return () => {
       client.off('audio', onAudioChunk);
-      if (audioPlaybackTimeoutRef.current) {
-        clearTimeout(audioPlaybackTimeoutRef.current);
-      }
+      client.off('turncomplete', onTurnComplete);
+      client.off('interrupted', onInterrupted);
     };
   }, [client, isAudioPlaying]);
 
@@ -121,7 +141,7 @@ function ReceptionistApp() {
     collectedSlots: {}
   });
 
-  // Handle Tool Calls
+  // ── Handle Tool Calls ─────────────────────────────────────────────
   useEffect(() => {
     const onToolCall = async (toolCall: any) => {
       console.log("Tool Call:", toolCall);
@@ -133,19 +153,17 @@ function ReceptionistApp() {
 
         try {
           if (name === "classify_intent") {
-            // Record the detected intent
             setConversationState(prev => ({
               ...prev,
               intent: args.detected_intent
             }));
 
-            // Trigger avatar gestures based on intent
+            // Gesture based on intent
             if (args.detected_intent === 'sales_inquiry' || args.detected_intent === 'first_time_visit') {
-              avatarRef.current?.playAnimation('waving', { loop: false, duration: 2 });
+              fireGesture('waving', 2);
             }
-            // Confirmation gestures
             if (args.detected_intent === 'meeting_request' || args.detected_intent === 'appointment') {
-              avatarRef.current?.playAnimation('nodYes', { loop: false, duration: 1.5 });
+              fireGesture('nodYes', 1.5);
             }
 
             result = {
@@ -153,10 +171,8 @@ function ReceptionistApp() {
               intent: args.detected_intent,
               message: `Intent classified as ${args.detected_intent}`
             };
-            console.log(`Intent classified: ${args.detected_intent}`);
           }
           else if (name === "collect_slot_value") {
-            // Track collected slot values
             setConversationState(prev => ({
               ...prev,
               collectedSlots: {
@@ -169,7 +185,6 @@ function ReceptionistApp() {
               slot: args.slot_name,
               value: args.value
             };
-            console.log(`Collected slot: ${args.slot_name} = ${args.value}`);
           }
           else if (name === "save_visitor_info") {
             const visitor = await DatabaseManager.saveVisitor({
@@ -185,7 +200,6 @@ function ReceptionistApp() {
               notes: args.notes
             });
             result = { status: "success", visitor_id: visitor.id };
-            console.log("Visitor saved:", visitor);
           }
           else if (name === "check_returning_visitor") {
             const visitor = DatabaseManager.findByPhone(args.phone);
@@ -194,29 +208,22 @@ function ReceptionistApp() {
               : { is_returning: false };
           }
           else if (name === "route_to_department") {
-            // Trigger pointing animation for directions
-            avatarRef.current?.playAnimation('pointing', { loop: false, duration: 2 });
+            fireGesture('pointing', 2);
             result = {
               status: "success",
               department: args.department,
               message: `Routing ${args.visitor_name} to ${args.department} for ${args.intent}`
             };
-            console.log(`Routed to ${args.department}:`, args);
           }
           else if (name === "request_approval") {
-            console.log("Requesting approval...");
-            // Simulate approval request with delay
             await new Promise((resolve) => setTimeout(resolve, 3000));
             result = {
               status: "approved",
               message: `Approval granted for ${args.visitor_name}`
             };
-            console.log("Approval granted");
           }
           else if (name === "check_staff_availability") {
-            // Simulate staff availability check
-            // In production, this would check a real calendar/availability system
-            const isAvailable = Math.random() > 0.3; // 70% available
+            const isAvailable = Math.random() > 0.3;
             result = {
               available: isAvailable,
               staff_name: args.staff_name,
@@ -224,18 +231,12 @@ function ReceptionistApp() {
                 ? `${args.staff_name} is available`
                 : `${args.staff_name} is currently unavailable`
             };
-            console.log(`Staff availability: ${args.staff_name} - ${isAvailable ? 'Available' : 'Unavailable'}`);
           }
           else if (name === "notify_staff") {
-            console.log("Waiting for approval...");
-            // Simulate approval delay (5 seconds + 1s buffer)
             await new Promise((resolve) => setTimeout(resolve, 6000));
             result = { status: "approved", message: "Approval granted by " + args.staff_name };
           }
           else if (name === "log_delivery") {
-            console.log("Logging delivery:", args);
-            // In production, this would save to a delivery log system
-            // For now, we'll save it to the visitor database
             await DatabaseManager.saveVisitor({
               name: `Delivery from ${args.company}`,
               phone: "N/A",
@@ -253,15 +254,13 @@ function ReceptionistApp() {
             };
           }
           else if (name === "end_interaction") {
-            // Trigger bow animation for goodbye
-            avatarRef.current?.playAnimation('bow', { loop: false, duration: 3 });
-            // Wait 5 seconds for the final spoken response to play out, then disconnect
+            fireGesture('bow', 3);
             console.log("Interaction ended. Resetting in 5 seconds...");
             setTimeout(() => {
               client.disconnect();
-              setVideoStream(null); // Reset video stream if needed
-              // Reset conversation state
+              setVideoStream(null);
               setConversationState({ collectedSlots: {} });
+              setIsAudioPlaying(false);
             }, 6000);
             result = { status: "success", message: "Resetting kiosk." };
           }
@@ -272,7 +271,6 @@ function ReceptionistApp() {
               canvas.height = videoRef.current.videoHeight;
               canvas.getContext("2d")?.drawImage(videoRef.current, 0, 0);
               const dataUrl = canvas.toDataURL("image/jpeg");
-              console.log("Photo Captured:", dataUrl.substring(0, 50) + "...");
               result = { status: "success", message: "Photo captured successfully." };
             } else {
               result = { status: "error", message: "Camera not available." };
@@ -296,7 +294,7 @@ function ReceptionistApp() {
     return () => {
       client.off("toolcall", onToolCall);
     };
-  }, [client, conversationState]);
+  }, [client, conversationState, fireGesture]);
 
   return (
     <div className="App" style={{ background: 'linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)' }}>
@@ -308,7 +306,13 @@ function ReceptionistApp() {
           </h1>
 
           <div style={{ margin: '40px 0', width: '100%' }}>
-            <Avatar3D ref={avatarRef} connected={connected} speechText={lastAudioText} isAudioPlaying={isAudioPlaying} />
+            <Avatar3D
+              ref={avatarRef}
+              connected={connected}
+              speechText={lastAudioText}
+              isAudioPlaying={isAudioPlaying}
+              lipSyncRef={lipSyncRef}
+            />
           </div>
 
           <div style={{ color: '#aaa', marginBottom: 20 }}>
@@ -336,7 +340,7 @@ function ReceptionistApp() {
               width: "200px",
               borderRadius: "10px",
               border: "2px solid #555",
-              display: videoStream ? "block" : "none" // Only show when stream is active
+              display: videoStream ? "block" : "none"
             }}
           />
         </div>

@@ -3,6 +3,7 @@ import { Canvas } from '@react-three/fiber';
 import { Environment } from '@react-three/drei';
 import { AvatarModelUnified as AvatarModel, AvatarModelRef } from './AvatarModelUnified';
 import { LoadingScreen } from './LoadingScreen';
+import { LipSyncData } from '../../lib/audio-streamer';
 import './Avatar3D.css';
 
 export interface Avatar3DRef {
@@ -15,10 +16,11 @@ interface Avatar3DProps {
     speechText?: string;
     connected?: boolean;
     isAudioPlaying?: boolean;
+    lipSyncRef?: React.MutableRefObject<LipSyncData>;
 }
 
 export const Avatar3D = React.forwardRef<Avatar3DRef, Avatar3DProps>((props, ref) => {
-    const { speechText, isAudioPlaying } = props;
+    const { speechText, isAudioPlaying, lipSyncRef } = props;
     const avatarRef = useRef<AvatarModelRef>(null);
 
     // Expose the avatar methods to parent
@@ -63,7 +65,12 @@ export const Avatar3D = React.forwardRef<Avatar3DRef, Avatar3DProps>((props, ref
 
                 {/* Suspense fallback must be null or a THREE.js object */}
                 <Suspense fallback={null}>
-                    <AvatarModel ref={avatarRef} speechText={speechText} isAudioPlaying={isAudioPlaying} />
+                    <AvatarModel
+                        ref={avatarRef}
+                        speechText={speechText}
+                        isAudioPlaying={isAudioPlaying}
+                        lipSyncRef={lipSyncRef}
+                    />
                 </Suspense>
             </Canvas>
         </div>
@@ -73,3 +80,4 @@ export const Avatar3D = React.forwardRef<Avatar3DRef, Avatar3DProps>((props, ref
 Avatar3D.displayName = 'Avatar3D';
 
 export default Avatar3D;
+

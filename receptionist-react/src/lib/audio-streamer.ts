@@ -19,6 +19,14 @@ import {
   registeredWorklets,
 } from "./audioworklet-registry";
 
+export interface LipSyncData {
+  volume: number;
+  lowBand: number;
+  midBand: number;
+  highBand: number;
+  timestamp: number;
+}
+
 export class AudioStreamer {
   private sampleRate: number = 24000;
   private bufferSize: number = 7680;
@@ -35,7 +43,16 @@ export class AudioStreamer {
   public source: AudioBufferSourceNode;
   private endOfQueueAudioSource: AudioBufferSourceNode | null = null;
 
-  public onComplete = () => {};
+  /** Real-time lip sync frequency data, updated ~60fps by the lip-sync-analyser worklet */
+  public lipSyncData: LipSyncData = {
+    volume: 0,
+    lowBand: 0,
+    midBand: 0,
+    highBand: 0,
+    timestamp: 0,
+  };
+
+  public onComplete = () => { };
 
   constructor(public context: AudioContext) {
     this.gainNode = this.context.createGain();
