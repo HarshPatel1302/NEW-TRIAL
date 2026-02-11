@@ -65,10 +65,10 @@ function ReceptionistApp() {
   const avatarRef = useRef<Avatar3DRef>(null);
   const [videoStream, setVideoStream] = useState<MediaStream | null>(null);
   const [lastAudioText, setLastAudioText] = useState<string>("");
-  const [isAudioPlaying, setIsAudioPlaying] = useState(false);
   const [expressionCue, setExpressionCue] = useState<ExpressionCue>("neutral_professional");
+  const prevAssistantAudioPlayingRef = useRef(false);
 
-  const { client, setConfig, setModel, connected, lipSyncRef } = useLiveAPIContext();
+  const { client, setConfig, setModel, connected, lipSyncRef, assistantAudioPlaying } = useLiveAPIContext();
 
   // ── Gesture Controller ────────────────────────────────────────────
   const gestureControllerRef = useRef<GestureController | null>(null);
@@ -212,13 +212,21 @@ function ReceptionistApp() {
     let cueTimer: ReturnType<typeof setTimeout> | null = null;
     if (connected) {
       setExpressionCue("welcome_warm");
-      enqueueGesture("waving", { priority: 3, force: true });
+      enqueueGesture("waving", { duration: 6.0, priority: 3, force: true });
       client.send([{ text: "The user is here. Greet them immediately." }]);
 
       cueTimer = setTimeout(() => {
         setExpressionCue("listening_attentive");
       }, 1800);
     } else {
+      gestureQueueRef.current = [];
+      gestureBusyUntilRef.current = 0;
+      if (gestureProcessTimerRef.current) {
+        clearTimeout(gestureProcessTimerRef.current);
+        gestureProcessTimerRef.current = null;
+      }
+      gestureControllerRef.current?.resetToIdle();
+      prevAssistantAudioPlayingRef.current = false;
       setExpressionCue("neutral_professional");
       setLastAudioText("");
     }
@@ -230,45 +238,38 @@ function ReceptionistApp() {
     };
   }, [connected, client, enqueueGesture]);
 
-  // ── AUDIO PLAYBACK TRACKING → Gesture Controller ──────────────────
+  // ── AUDIO PLAYBACK TRACKING (actual output playback) ──────────────
   useEffect(() => {
-    const onAudioChunk = () => {
-      if (!isAudioPlaying) {
-        setIsAudioPlaying(true);
-        setExpressionCue("explaining_confident");
-        gestureControllerRef.current?.handleEvent({ type: 'audioStart' });
+    const prev = prevAssistantAudioPlayingRef.current;
+    if (!connected) {
+      if (prev) {
+        gestureControllerRef.current?.handleEvent({ type: 'audioStop' });
       }
-    };
+      prevAssistantAudioPlayingRef.current = false;
+      return;
+    }
 
-    const onTurnComplete = () => {
-      setIsAudioPlaying(false);
+    if (assistantAudioPlaying && !prev) {
+      if (speechClearTimerRef.current) {
+        clearTimeout(speechClearTimerRef.current);
+      }
+      setExpressionCue("explaining_confident");
+      gestureControllerRef.current?.handleEvent({ type: 'audioStart' });
+    }
+
+    if (!assistantAudioPlaying && prev) {
       setExpressionCue("listening_attentive");
       gestureControllerRef.current?.handleEvent({ type: 'audioStop' });
-
       if (speechClearTimerRef.current) {
         clearTimeout(speechClearTimerRef.current);
       }
       speechClearTimerRef.current = setTimeout(() => {
         setLastAudioText("");
       }, 1800);
-    };
+    }
 
-    const onInterrupted = () => {
-      setIsAudioPlaying(false);
-      setExpressionCue("listening_attentive");
-      gestureControllerRef.current?.handleEvent({ type: 'audioStop' });
-    };
-
-    client.on('audio', onAudioChunk);
-    client.on('turncomplete', onTurnComplete);
-    client.on('interrupted', onInterrupted);
-
-    return () => {
-      client.off('audio', onAudioChunk);
-      client.off('turncomplete', onTurnComplete);
-      client.off('interrupted', onInterrupted);
-    };
-  }, [client, isAudioPlaying]);
+    prevAssistantAudioPlayingRef.current = assistantAudioPlaying;
+  }, [assistantAudioPlaying, connected]);
 
   // ── Model Text Content → Speech Bubble ───────────────────────────
   useEffect(() => {
@@ -433,7 +434,6 @@ function ReceptionistApp() {
               client.disconnect();
               setVideoStream(null);
               setConversationState({ collectedSlots: {} });
-              setIsAudioPlaying(false);
               setLastAudioText("");
               setExpressionCue("neutral_professional");
             }, 6000);
@@ -486,7 +486,7 @@ function ReceptionistApp() {
               connected={connected}
               speechText={lastAudioText}
               expressionCue={expressionCue}
-              isAudioPlaying={isAudioPlaying}
+              isAudioPlaying={assistantAudioPlaying}
               lipSyncRef={lipSyncRef}
             />
           </div>

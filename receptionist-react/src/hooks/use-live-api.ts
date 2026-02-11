@@ -33,6 +33,7 @@ export type UseLiveAPIResults = {
   connect: () => Promise<void>;
   disconnect: () => Promise<void>;
   volume: number;
+  assistantAudioPlaying: boolean;
   /** Ref to real-time lip sync frequency data (read in useFrame, no re-renders) */
   lipSyncRef: React.MutableRefObject<LipSyncData>;
 };
@@ -45,6 +46,7 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
   const [config, setConfig] = useState<LiveConnectConfig>({});
   const [connected, setConnected] = useState(false);
   const [volume, setVolume] = useState(0);
+  const [assistantAudioPlaying, setAssistantAudioPlaying] = useState(false);
 
   // Lip sync data ref — updated by worklet, read by avatar in useFrame (no re-renders)
   const lipSyncRef = useRef<LipSyncData>({
@@ -65,6 +67,9 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
       audioContext({ id: "audio-out" }).then(async (audioCtx: AudioContext) => {
         const streamer = new AudioStreamer(audioCtx);
         audioStreamerRef.current = streamer;
+        streamer.onPlaybackStart = () => setAssistantAudioPlaying(true);
+        streamer.onPlaybackStop = () => setAssistantAudioPlaying(false);
+        streamer.onComplete = () => setAssistantAudioPlaying(false);
 
         // Volume meter worklet (existing)
         await streamer.addWorklet<any>("vumeter-out", VolMeterWorket, (ev: any) => {
@@ -101,6 +106,7 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
     const onClose = () => {
       console.log("Connection closed");
       setConnected(false);
+      setAssistantAudioPlaying(false);
     };
 
     const onError = (error: ErrorEvent) => {
@@ -108,6 +114,7 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
     };
 
     const stopAudioStreamer = () => audioStreamerRef.current?.stop();
+    const completeAudioStreamer = () => audioStreamerRef.current?.complete();
 
     const onAudio = (data: ArrayBuffer) =>
       audioStreamerRef.current?.addPCM16(new Uint8Array(data));
@@ -117,6 +124,7 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
       .on("open", onOpen)
       .on("close", onClose)
       .on("interrupted", stopAudioStreamer)
+      .on("turncomplete", completeAudioStreamer)
       .on("audio", onAudio);
 
     return () => {
@@ -125,6 +133,7 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
         .off("open", onOpen)
         .off("close", onClose)
         .off("interrupted", stopAudioStreamer)
+        .off("turncomplete", completeAudioStreamer)
         .off("audio", onAudio)
         .disconnect();
     };
@@ -149,6 +158,7 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
   const disconnect = useCallback(async () => {
     client.disconnect();
     setConnected(false);
+    setAssistantAudioPlaying(false);
   }, [setConnected, client]);
 
   return {
@@ -161,6 +171,7 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
     connect,
     disconnect,
     volume,
+    assistantAudioPlaying,
     lipSyncRef,
   };
 }

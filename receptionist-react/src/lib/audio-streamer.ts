@@ -41,11 +41,13 @@ export class AudioStreamer {
   private isStreamComplete: boolean = false;
   private checkInterval: number | null = null;
   private scheduledTime: number = 0;
-  private initialBufferTime: number = 0.1; //0.1 // 100ms initial buffer
+  // Lower startup buffer for snappier assistant responses while preserving stability.
+  private initialBufferTime: number = 0.06;
   // Web Audio API nodes. source => gain => destination
   public gainNode: GainNode;
   public source: AudioBufferSourceNode;
   private endOfQueueAudioSource: AudioBufferSourceNode | null = null;
+  private playbackStarted = false;
 
   /** Real-time lip sync frequency data, updated ~60fps by the lip-sync-analyser worklet */
   public lipSyncData: LipSyncData = {
@@ -61,6 +63,8 @@ export class AudioStreamer {
   };
 
   public onComplete = () => { };
+  public onPlaybackStart = () => { };
+  public onPlaybackStop = () => { };
 
   constructor(public context: AudioContext) {
     this.gainNode = this.context.createGain();
@@ -143,6 +147,7 @@ export class AudioStreamer {
     // Start playing if not already playing.
     if (!this.isPlaying) {
       this.isPlaying = true;
+      this.notifyPlaybackStart();
       // Initialize scheduledTime only when we start playing
       this.scheduledTime = this.context.currentTime + this.initialBufferTime;
       this.scheduleNextBuffer();
@@ -181,6 +186,14 @@ export class AudioStreamer {
             this.endOfQueueAudioSource === source
           ) {
             this.endOfQueueAudioSource = null;
+            if (this.isStreamComplete) {
+              this.isPlaying = false;
+              this.notifyPlaybackStop();
+              if (this.checkInterval) {
+                clearInterval(this.checkInterval);
+                this.checkInterval = null;
+              }
+            }
             this.onComplete();
           }
         };
@@ -213,10 +226,18 @@ export class AudioStreamer {
 
     if (this.audioQueue.length === 0) {
       if (this.isStreamComplete) {
-        this.isPlaying = false;
-        if (this.checkInterval) {
-          clearInterval(this.checkInterval);
-          this.checkInterval = null;
+        // Wait for the final scheduled source to finish before stopping playback state.
+        const waitingForTailSource =
+          !!this.endOfQueueAudioSource &&
+          this.context.currentTime < this.scheduledTime - 0.005;
+
+        if (!waitingForTailSource) {
+          this.isPlaying = false;
+          this.notifyPlaybackStop();
+          if (this.checkInterval) {
+            clearInterval(this.checkInterval);
+            this.checkInterval = null;
+          }
         }
       } else {
         if (!this.checkInterval) {
@@ -242,6 +263,7 @@ export class AudioStreamer {
     this.isStreamComplete = true;
     this.audioQueue = [];
     this.scheduledTime = this.context.currentTime;
+    this.notifyPlaybackStop();
 
     if (this.checkInterval) {
       clearInterval(this.checkInterval);
@@ -271,7 +293,19 @@ export class AudioStreamer {
 
   complete() {
     this.isStreamComplete = true;
-    this.onComplete();
+    this.scheduleNextBuffer();
+  }
+
+  private notifyPlaybackStart() {
+    if (this.playbackStarted) return;
+    this.playbackStarted = true;
+    this.onPlaybackStart();
+  }
+
+  private notifyPlaybackStop() {
+    if (!this.playbackStarted) return;
+    this.playbackStarted = false;
+    this.onPlaybackStop();
   }
 }
 

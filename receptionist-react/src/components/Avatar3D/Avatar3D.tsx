@@ -49,10 +49,11 @@ export const Avatar3D = React.forwardRef<Avatar3DRef, Avatar3DProps>((props, ref
 
             <Canvas
                 camera={{
-                    position: [0, 0.5, 3.5],  // Moved back to see more
-                    fov: 55,  // Increased FOV slightly
+                    // Upper-body framing (head to waist)
+                    position: [0, 0.68, 1.55],
+                    fov: 46,
                     near: 0.1,
-                    far: 100  // Increased far plane
+                    far: 100
                 }}
                 gl={{
                     antialias: true,

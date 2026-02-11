@@ -19,10 +19,10 @@ describe('GestureController', () => {
     controller.handleEvent({ type: 'audioStart' });
     expect(played).toEqual([]);
 
-    jest.advanceTimersByTime(100);
+    jest.advanceTimersByTime(180);
     expect(played).toEqual([]);
 
-    jest.advanceTimersByTime(60);
+    jest.advanceTimersByTime(50);
     expect(played).toEqual(['talking']);
 
     controller.handleEvent({ type: 'audioStop' });
@@ -49,5 +49,25 @@ describe('GestureController', () => {
 
     jest.advanceTimersByTime(150);
     expect(played).toEqual(['waving', 'idle']);
+  });
+
+  it('can hard reset to idle and cancel pending transitions', () => {
+    const played: string[] = [];
+    const controller = new GestureController((name) => {
+      played.push(name);
+    });
+
+    controller.handleEvent({ type: 'audioStart' });
+    jest.advanceTimersByTime(250);
+    expect(played).toEqual(['talking']);
+
+    controller.handleEvent({ type: 'gesture', gesture: 'waving', duration: 1.5 });
+    expect(played).toEqual(['talking', 'waving']);
+
+    controller.resetToIdle();
+    expect(played).toEqual(['talking', 'waving', 'idle']);
+
+    jest.advanceTimersByTime(1600);
+    expect(played).toEqual(['talking', 'waving', 'idle']);
   });
 });

@@ -40,7 +40,7 @@ export class GestureController {
      * Delay entering full talking body animation.
      * If utterance is very short, stay in idle to prevent visual spikes.
      */
-    private static TALKING_START_DELAY = 140;
+    private static TALKING_START_DELAY = 220;
 
     constructor(playAnimation: PlayAnimationFn, options: GestureControllerOptions = {}) {
         this.playAnimation = playAnimation;
@@ -78,6 +78,23 @@ export class GestureController {
         if (this.audioStopTimeout) clearTimeout(this.audioStopTimeout);
         if (this.talkingStartTimeout) clearTimeout(this.talkingStartTimeout);
         if (this.gestureReturnTimeout) clearTimeout(this.gestureReturnTimeout);
+    }
+
+    resetToIdle(): void {
+        this.audioActive = false;
+        if (this.audioStopTimeout) {
+            clearTimeout(this.audioStopTimeout);
+            this.audioStopTimeout = null;
+        }
+        if (this.talkingStartTimeout) {
+            clearTimeout(this.talkingStartTimeout);
+            this.talkingStartTimeout = null;
+        }
+        if (this.gestureReturnTimeout) {
+            clearTimeout(this.gestureReturnTimeout);
+            this.gestureReturnTimeout = null;
+        }
+        this.transitionTo('idle');
     }
 
     // ── Internal transitions ────────────────────────────────────────

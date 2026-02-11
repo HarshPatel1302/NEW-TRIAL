@@ -33,6 +33,15 @@ const DEFAULT_MODEL_VERSION: AvatarModelVersion =
 
 const CROSSFADE_DURATION = 0.5;
 const AUDIO_STALE_MS = 250;
+const HEAD_YAW_LIMIT = 0.72;
+const HEAD_PITCH_DOWN_LIMIT = -0.34;
+const HEAD_PITCH_UP_LIMIT = 0.16;
+const HEAD_TRACK_HEIGHT = 1.62;
+const HEAD_PITCH_BIAS = -0.14;
+const MIN_ACTION_SPEED = 0.3;
+const MAX_ACTION_SPEED = 0.8;
+const MODEL_POSITION: [number, number, number] = [0, -2.38, 0];
+const MODEL_SCALE: [number, number, number] = [1.72, 1.72, 1.72];
 
 // Preload the default model for faster initial render.
 useGLTF.preload(MODEL_PATHS[DEFAULT_MODEL_VERSION]);
@@ -55,6 +64,10 @@ export const AvatarModelUnified = React.forwardRef<AvatarModelRef, AvatarModelPr
     const currentActionRef = useRef<THREE.AnimationAction | null>(null);
     const animationDurationsRef = useRef<Record<string, number>>({});
     const facialControllerRef = useRef<FacialController>(new FacialController());
+    const headBaseRotationRef = useRef<THREE.Euler>(new THREE.Euler());
+    const headBaseCapturedRef = useRef(false);
+    const worldCameraPosRef = useRef(new THREE.Vector3());
+    const worldAvatarPosRef = useRef(new THREE.Vector3());
 
     const [headBone, setHeadBone] = useState<THREE.Bone | null>(null);
     const [allMeshesWithMorphs, setAllMeshesWithMorphs] = useState<THREE.Mesh[]>([]);
@@ -62,18 +75,20 @@ export const AvatarModelUnified = React.forwardRef<AvatarModelRef, AvatarModelPr
     useEffect(() => {
         const meshes: THREE.Mesh[] = [];
         let foundHead: THREE.Bone | null = null;
+        let foundNeck: THREE.Bone | null = null;
 
         scene.traverse((obj: any) => {
             if (obj.isMesh && obj.morphTargetDictionary) {
                 meshes.push(obj as THREE.Mesh);
             }
 
-            if (
-                obj.isBone &&
-                !foundHead &&
-                (obj.name.toLowerCase().includes('head') || obj.name.toLowerCase().includes('neck'))
-            ) {
-                foundHead = obj as THREE.Bone;
+            if (obj.isBone) {
+                const lower = obj.name.toLowerCase();
+                if (!foundHead && lower.includes('head')) {
+                    foundHead = obj as THREE.Bone;
+                } else if (!foundNeck && lower.includes('neck')) {
+                    foundNeck = obj as THREE.Bone;
+                }
             }
         });
 
@@ -84,7 +99,12 @@ export const AvatarModelUnified = React.forwardRef<AvatarModelRef, AvatarModelPr
         animationDurationsRef.current = durations;
 
         setAllMeshesWithMorphs(meshes);
-        setHeadBone(foundHead);
+        const trackingBone = (foundHead ?? foundNeck) as THREE.Bone | null;
+        setHeadBone(trackingBone);
+        if (trackingBone !== null) {
+            headBaseRotationRef.current.copy(trackingBone.rotation);
+            headBaseCapturedRef.current = true;
+        }
 
         // Default to idle if available, otherwise first clip.
         const idleAction = actions.idle || actions[Object.keys(actions)[0]];
@@ -97,6 +117,7 @@ export const AvatarModelUnified = React.forwardRef<AvatarModelRef, AvatarModelPr
     useEffect(() => {
         // Reset state when switching model variants.
         facialControllerRef.current.reset();
+        headBaseCapturedRef.current = false;
     }, [modelPath]);
 
     const playAction = (name: string, options?: { loop?: boolean; duration?: number }) => {
@@ -108,11 +129,23 @@ export const AvatarModelUnified = React.forwardRef<AvatarModelRef, AvatarModelPr
         const next = actions[name]!;
         const prev = currentActionRef.current;
         const isLoop = options?.loop !== false;
+        const clipDuration = animationDurationsRef.current[name];
 
         next.reset();
-        next.setLoop(isLoop ? THREE.LoopRepeat : THREE.LoopOnce, Infinity);
-        if (!isLoop) {
-            next.clampWhenFinished = true;
+        next.stopFading();
+        next.stopWarping();
+        next.setLoop(isLoop ? THREE.LoopRepeat : THREE.LoopOnce, isLoop ? Infinity : 1);
+        next.clampWhenFinished = !isLoop;
+
+        if (!isLoop && options?.duration && clipDuration && clipDuration > 0) {
+            const speed = THREE.MathUtils.clamp(
+                clipDuration / options.duration,
+                MIN_ACTION_SPEED,
+                MAX_ACTION_SPEED,
+            );
+            next.setEffectiveTimeScale(speed);
+        } else {
+            next.setEffectiveTimeScale(1);
         }
         next.play();
 
@@ -127,8 +160,8 @@ export const AvatarModelUnified = React.forwardRef<AvatarModelRef, AvatarModelPr
         playAnimation: playAction,
         getAnimationDuration: (name: string) => animationDurationsRef.current[name] ?? null,
         // Speech bubble UI has been removed; retain no-op methods for API compatibility.
-        setSpeechBubble: () => {},
-        clearSpeechBubble: () => {},
+        setSpeechBubble: () => { },
+        clearSpeechBubble: () => { },
     }));
 
     useFrame((state, delta) => {
@@ -138,20 +171,32 @@ export const AvatarModelUnified = React.forwardRef<AvatarModelRef, AvatarModelPr
 
         // Head tracking for eye-contact behavior.
         if (headBone && group.current) {
-            const camera = state.camera.position;
-            const avatarPos = group.current.position;
+            if (!headBaseCapturedRef.current) {
+                headBaseRotationRef.current.copy(headBone.rotation);
+                headBaseCapturedRef.current = true;
+            }
+
+            const camera = state.camera.getWorldPosition(worldCameraPosRef.current);
+            const avatarPos = group.current.getWorldPosition(worldAvatarPosRef.current);
 
             const xDiff = camera.x - avatarPos.x;
             const zDiff = camera.z - avatarPos.z;
-            let angleY = Math.atan2(xDiff, zDiff);
-            angleY = Math.max(-1.0, Math.min(1.0, angleY));
+            const yDiff = camera.y - (avatarPos.y + HEAD_TRACK_HEIGHT);
 
-            headBone.rotation.y = THREE.MathUtils.lerp(headBone.rotation.y, angleY, 0.1);
+            const yaw = THREE.MathUtils.clamp(Math.atan2(xDiff, zDiff), -HEAD_YAW_LIMIT, HEAD_YAW_LIMIT);
+            const horizontalDistance = Math.max(0.001, Math.sqrt(xDiff ** 2 + zDiff ** 2));
+            const pitch = THREE.MathUtils.clamp(
+                Math.atan2(yDiff, horizontalDistance) + HEAD_PITCH_BIAS,
+                HEAD_PITCH_DOWN_LIMIT,
+                HEAD_PITCH_UP_LIMIT,
+            );
 
-            const yDiff = camera.y - avatarPos.y - 1.5;
-            let angleX = Math.atan2(yDiff, Math.sqrt(xDiff ** 2 + zDiff ** 2));
-            angleX = Math.max(-0.5, Math.min(0.5, angleX));
-            headBone.rotation.x = THREE.MathUtils.lerp(headBone.rotation.x, angleX, 0.1);
+            const base = headBaseRotationRef.current;
+            const targetX = base.x + pitch;
+            const targetY = base.y + yaw;
+
+            headBone.rotation.y = THREE.MathUtils.lerp(headBone.rotation.y, targetY, 0.1);
+            headBone.rotation.x = THREE.MathUtils.lerp(headBone.rotation.x, targetX, 0.1);
         }
 
         const lipData = lipSyncRef?.current;
@@ -184,7 +229,7 @@ export const AvatarModelUnified = React.forwardRef<AvatarModelRef, AvatarModelPr
     });
 
     return (
-        <group ref={group} position={[0, -1.5, 0]} scale={[1.8, 1.8, 1.8]}>
+        <group ref={group} position={MODEL_POSITION} scale={MODEL_SCALE}>
             <primitive object={scene} />
         </group>
     );
