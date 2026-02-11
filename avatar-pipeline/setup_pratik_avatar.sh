@@ -15,8 +15,9 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # Configuration
-AVATAR_DIR="/Users/harshui/Documents/FutureScape/VR Avatar"
-MODELS_DIR="$AVATAR_DIR/receptionist-react/public/models"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PARENT_DIR="$(dirname "$SCRIPT_DIR")"
+MODELS_DIR="$PARENT_DIR/receptionist-react/public/models"
 INPUT_AVATAR="$MODELS_DIR/pratik_avatar.glb"
 MORPH_AVATAR="$MODELS_DIR/pratik_avatar_with_morphs.glb"
 FINAL_AVATAR="$MODELS_DIR/pratik_final.glb"
@@ -65,7 +66,7 @@ fi
 
 if [ "$SKIP_MORPH" != "true" ]; then
     echo "Running Blender script (this will take 1-2 minutes)..."
-    cd "$AVATAR_DIR"
+    cd "$SCRIPT_DIR"
     "$BLENDER_CMD" -b "$INPUT_AVATAR" --python blender_auto_morph_targets.py
     
     if [ -f "$MORPH_AVATAR" ]; then
@@ -93,7 +94,7 @@ fi
 
 if [ "$SKIP_ANIM" != "true" ]; then
     echo "Running Blender animation merger (this will take 2-3 minutes)..."
-    cd "$AVATAR_DIR"
+    cd "$SCRIPT_DIR"
     "$BLENDER_CMD" -b "$MORPH_AVATAR" --python blender_merge_animations.py
     
     if [ -f "$FINAL_AVATAR" ]; then

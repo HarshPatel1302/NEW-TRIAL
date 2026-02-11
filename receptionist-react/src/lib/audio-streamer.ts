@@ -24,6 +24,10 @@ export interface LipSyncData {
   lowBand: number;
   midBand: number;
   highBand: number;
+  voiced: number;
+  plosive: number;
+  sibilance: number;
+  envelope: number;
   timestamp: number;
 }
 
@@ -49,6 +53,10 @@ export class AudioStreamer {
     lowBand: 0,
     midBand: 0,
     highBand: 0,
+    voiced: 0,
+    plosive: 0,
+    sibilance: 0,
+    envelope: 0,
     timestamp: 0,
   };
 

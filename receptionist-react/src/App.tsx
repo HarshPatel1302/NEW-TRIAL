@@ -23,7 +23,8 @@ import { LiveClientOptions } from "./types";
 import { RECEPTIONIST_PERSONA } from "./receptionist/config";
 import { TOOLS } from "./receptionist/tools";
 import { DatabaseManager } from "./receptionist/database";
-import { GestureController } from "./components/Avatar3D/gesture-controller";
+import { GestureController, GestureState } from "./components/Avatar3D/gesture-controller";
+import { ExpressionCue } from "./components/Avatar3D/facial-types";
 
 const API_KEY = process.env.REACT_APP_GEMINI_API_KEY as string;
 if (typeof API_KEY !== "string") {
@@ -34,17 +35,55 @@ const apiOptions: LiveClientOptions = {
   apiKey: API_KEY,
 };
 
+type QueuedGesture = {
+  gesture: GestureState;
+  duration?: number;
+  priority: number;
+  createdAt: number;
+};
+
+const FALLBACK_GESTURE_DURATIONS: Record<GestureState, number> = {
+  idle: 2,
+  talking: 2,
+  waving: 4.7,
+  pointing: 2.75,
+  nodYes: 2.6,
+  bow: 2.73,
+};
+
+const GESTURE_COOLDOWN_MS: Record<GestureState, number> = {
+  idle: 0,
+  talking: 0,
+  waving: 1800,
+  pointing: 1600,
+  nodYes: 1100,
+  bow: 3000,
+};
+
 function ReceptionistApp() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const avatarRef = useRef<Avatar3DRef>(null);
   const [videoStream, setVideoStream] = useState<MediaStream | null>(null);
   const [lastAudioText, setLastAudioText] = useState<string>("");
   const [isAudioPlaying, setIsAudioPlaying] = useState(false);
+  const [expressionCue, setExpressionCue] = useState<ExpressionCue>("neutral_professional");
 
   const { client, setConfig, setModel, connected, lipSyncRef } = useLiveAPIContext();
 
   // ── Gesture Controller ────────────────────────────────────────────
   const gestureControllerRef = useRef<GestureController | null>(null);
+  const gestureQueueRef = useRef<QueuedGesture[]>([]);
+  const gestureProcessTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const gestureBusyUntilRef = useRef(0);
+  const lastGestureAtRef = useRef<Record<GestureState, number>>({
+    idle: 0,
+    talking: 0,
+    waving: 0,
+    pointing: 0,
+    nodYes: 0,
+    bow: 0,
+  });
+  const speechClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Stable callback ref for playAnimation (avoids recreating controller)
   const playAnimationRef = useRef<Avatar3DRef['playAnimation'] | null>(null);
@@ -52,26 +91,99 @@ function ReceptionistApp() {
     playAnimationRef.current = (name: string, options?: { loop?: boolean; duration?: number }) => {
       avatarRef.current?.playAnimation(name, options);
     };
-  });
+  }, []);
+
+  const resolveGestureDuration = useCallback((gesture: GestureState): number => {
+    const runtimeClipDuration = avatarRef.current?.getAnimationDuration(gesture);
+    return runtimeClipDuration || FALLBACK_GESTURE_DURATIONS[gesture] || 2;
+  }, []);
+
+  const processGestureQueue = useCallback(() => {
+    const now = Date.now();
+    if (now < gestureBusyUntilRef.current) {
+      return;
+    }
+
+    const next = gestureQueueRef.current.shift();
+    if (!next) {
+      return;
+    }
+
+    gestureControllerRef.current?.handleEvent({
+      type: "gesture",
+      gesture: next.gesture,
+      duration: next.duration,
+    });
+
+    const durationSeconds = next.duration || resolveGestureDuration(next.gesture);
+    gestureBusyUntilRef.current = now + durationSeconds * 1000 + 160;
+
+    if (gestureProcessTimerRef.current) {
+      clearTimeout(gestureProcessTimerRef.current);
+    }
+    gestureProcessTimerRef.current = setTimeout(() => {
+      gestureProcessTimerRef.current = null;
+      processGestureQueue();
+    }, Math.max(100, durationSeconds * 1000 + 30));
+  }, [resolveGestureDuration]);
+
+  const enqueueGesture = useCallback((
+    gesture: GestureState,
+    options: { duration?: number; priority?: number; force?: boolean } = {}
+  ) => {
+    const now = Date.now();
+    const cooldown = GESTURE_COOLDOWN_MS[gesture] || 0;
+    const previousTime = lastGestureAtRef.current[gesture] || 0;
+
+    if (!options.force && cooldown > 0 && now - previousTime < cooldown) {
+      return false;
+    }
+
+    lastGestureAtRef.current[gesture] = now;
+
+    gestureQueueRef.current.push({
+      gesture,
+      duration: options.duration,
+      priority: options.priority ?? 1,
+      createdAt: now,
+    });
+
+    gestureQueueRef.current.sort((a, b) => {
+      if (a.priority !== b.priority) {
+        return b.priority - a.priority;
+      }
+      return a.createdAt - b.createdAt;
+    });
+
+    processGestureQueue();
+    return true;
+  }, [processGestureQueue]);
 
   // Create gesture controller once
   useEffect(() => {
     gestureControllerRef.current = new GestureController(
-      (name, options) => playAnimationRef.current?.(name, options)
+      (name, options) => playAnimationRef.current?.(name, options),
+      { getGestureDuration: resolveGestureDuration }
     );
+
     return () => {
       gestureControllerRef.current?.destroy();
+      if (gestureProcessTimerRef.current) {
+        clearTimeout(gestureProcessTimerRef.current);
+      }
+      if (speechClearTimerRef.current) {
+        clearTimeout(speechClearTimerRef.current);
+      }
     };
-  }, []);
+  }, [resolveGestureDuration]);
 
-  // Helper to fire gesture events
-  const fireGesture = useCallback((gesture: string, duration?: number) => {
-    gestureControllerRef.current?.handleEvent({
-      type: 'gesture',
-      gesture: gesture as any,
-      duration,
-    });
-  }, []);
+  const fireGesture = useCallback((
+    gesture: GestureState,
+    duration?: number,
+    priority = 1
+  ) => {
+    enqueueGesture(gesture, { duration, priority });
+  }, [enqueueGesture]);
 
   // ── Initial Configuration ─────────────────────────────────────────
   useEffect(() => {
@@ -97,28 +209,53 @@ function ReceptionistApp() {
 
   // ── AUTO-GREETING ─────────────────────────────────────────────────
   useEffect(() => {
+    let cueTimer: ReturnType<typeof setTimeout> | null = null;
     if (connected) {
-      fireGesture('waving', 2);
+      setExpressionCue("welcome_warm");
+      enqueueGesture("waving", { priority: 3, force: true });
       client.send([{ text: "The user is here. Greet them immediately." }]);
+
+      cueTimer = setTimeout(() => {
+        setExpressionCue("listening_attentive");
+      }, 1800);
+    } else {
+      setExpressionCue("neutral_professional");
+      setLastAudioText("");
     }
-  }, [connected, client, fireGesture]);
+
+    return () => {
+      if (cueTimer) {
+        clearTimeout(cueTimer);
+      }
+    };
+  }, [connected, client, enqueueGesture]);
 
   // ── AUDIO PLAYBACK TRACKING → Gesture Controller ──────────────────
   useEffect(() => {
     const onAudioChunk = () => {
       if (!isAudioPlaying) {
         setIsAudioPlaying(true);
+        setExpressionCue("explaining_confident");
         gestureControllerRef.current?.handleEvent({ type: 'audioStart' });
       }
     };
 
     const onTurnComplete = () => {
       setIsAudioPlaying(false);
+      setExpressionCue("listening_attentive");
       gestureControllerRef.current?.handleEvent({ type: 'audioStop' });
+
+      if (speechClearTimerRef.current) {
+        clearTimeout(speechClearTimerRef.current);
+      }
+      speechClearTimerRef.current = setTimeout(() => {
+        setLastAudioText("");
+      }, 1800);
     };
 
     const onInterrupted = () => {
       setIsAudioPlaying(false);
+      setExpressionCue("listening_attentive");
       gestureControllerRef.current?.handleEvent({ type: 'audioStop' });
     };
 
@@ -132,6 +269,34 @@ function ReceptionistApp() {
       client.off('interrupted', onInterrupted);
     };
   }, [client, isAudioPlaying]);
+
+  // ── Model Text Content → Speech Bubble ───────────────────────────
+  useEffect(() => {
+    const onContent = (payload: any) => {
+      const parts = payload?.modelTurn?.parts;
+      if (!Array.isArray(parts)) return;
+
+      const text = parts
+        .map((part: any) => (typeof part?.text === "string" ? part.text.trim() : ""))
+        .filter(Boolean)
+        .join(" ");
+
+      if (!text) return;
+
+      setLastAudioText(text);
+      if (speechClearTimerRef.current) {
+        clearTimeout(speechClearTimerRef.current);
+      }
+      speechClearTimerRef.current = setTimeout(() => {
+        setLastAudioText("");
+      }, 7000);
+    };
+
+    client.on("content", onContent);
+    return () => {
+      client.off("content", onContent);
+    };
+  }, [client]);
 
   // Conversation state for slot-filling
   const [conversationState, setConversationState] = useState<{
@@ -157,13 +322,19 @@ function ReceptionistApp() {
               ...prev,
               intent: args.detected_intent
             }));
+            setExpressionCue("listening_attentive");
 
             // Gesture based on intent
             if (args.detected_intent === 'sales_inquiry' || args.detected_intent === 'first_time_visit') {
-              fireGesture('waving', 2);
+              fireGesture('waving', undefined, 2);
             }
-            if (args.detected_intent === 'meeting_request' || args.detected_intent === 'appointment') {
-              fireGesture('nodYes', 1.5);
+            if (
+              args.detected_intent === 'meeting_request' ||
+              args.detected_intent === 'meet_person' ||
+              args.detected_intent === 'appointment'
+            ) {
+              setExpressionCue("confirming_yes");
+              fireGesture('nodYes', undefined, 2);
             }
 
             result = {
@@ -208,7 +379,8 @@ function ReceptionistApp() {
               : { is_returning: false };
           }
           else if (name === "route_to_department") {
-            fireGesture('pointing', 2);
+            setExpressionCue("explaining_confident");
+            fireGesture('pointing', undefined, 2);
             result = {
               status: "success",
               department: args.department,
@@ -254,13 +426,16 @@ function ReceptionistApp() {
             };
           }
           else if (name === "end_interaction") {
-            fireGesture('bow', 3);
+            setExpressionCue("goodbye_formal");
+            fireGesture('bow', undefined, 3);
             console.log("Interaction ended. Resetting in 5 seconds...");
             setTimeout(() => {
               client.disconnect();
               setVideoStream(null);
               setConversationState({ collectedSlots: {} });
               setIsAudioPlaying(false);
+              setLastAudioText("");
+              setExpressionCue("neutral_professional");
             }, 6000);
             result = { status: "success", message: "Resetting kiosk." };
           }
@@ -270,7 +445,7 @@ function ReceptionistApp() {
               canvas.width = videoRef.current.videoWidth;
               canvas.height = videoRef.current.videoHeight;
               canvas.getContext("2d")?.drawImage(videoRef.current, 0, 0);
-              const dataUrl = canvas.toDataURL("image/jpeg");
+              canvas.toDataURL("image/jpeg");
               result = { status: "success", message: "Photo captured successfully." };
             } else {
               result = { status: "error", message: "Camera not available." };
@@ -310,6 +485,7 @@ function ReceptionistApp() {
               ref={avatarRef}
               connected={connected}
               speechText={lastAudioText}
+              expressionCue={expressionCue}
               isAudioPlaying={isAudioPlaying}
               lipSyncRef={lipSyncRef}
             />

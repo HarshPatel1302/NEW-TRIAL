@@ -48,7 +48,15 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
 
   // Lip sync data ref — updated by worklet, read by avatar in useFrame (no re-renders)
   const lipSyncRef = useRef<LipSyncData>({
-    volume: 0, lowBand: 0, midBand: 0, highBand: 0, timestamp: 0,
+    volume: 0,
+    lowBand: 0,
+    midBand: 0,
+    highBand: 0,
+    voiced: 0,
+    plosive: 0,
+    sibilance: 0,
+    envelope: 0,
+    timestamp: 0,
   });
 
   // register audio for streaming server -> speakers
@@ -71,6 +79,10 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
           lipSyncRef.current.lowBand = data.lowBand;
           lipSyncRef.current.midBand = data.midBand;
           lipSyncRef.current.highBand = data.highBand;
+          lipSyncRef.current.voiced = data.voiced ?? 0;
+          lipSyncRef.current.plosive = data.plosive ?? 0;
+          lipSyncRef.current.sibilance = data.sibilance ?? 0;
+          lipSyncRef.current.envelope = data.envelope ?? data.volume;
           lipSyncRef.current.timestamp = performance.now();
 
           // Also update the streamer's copy for consistency

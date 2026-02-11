@@ -75,37 +75,49 @@ lsof -ti:3000 | xargs kill -9 && cd receptionist-react && npm start
 
 ---
 
+## 🏗 Repository Structure
+
+- `receptionist-react/`: The main React application powered by Gemini Multimodal Live API.
+- `avatar-pipeline/`: Tools and scripts for processing the 3D avatar (Blender/Python).
+- `.agent/`: Agent-specific workflows and configurations.
+
+---
+
 ## 📦 Core Architecture
 
 ### 👄 Lip Sync Pipeline
-The avatar's mouth movement is driven by a custom processing chain:
+The avatar's mouth movement is driven by a custom processing chain within the React app:
 1. **Source**: Gemini Live API streams PCM audio chunks.
-2. **Worklet**: A `LipSyncAnalyser` (AudioWorklet) extracts energy levels from Low (Vowels), Mid (Formants), and High (Sibilants) bands.
-3. **Mapping**: Frequency data is mapped to 5 core visemes: `jawOpen`, `viseme_aa`, `viseme_O`, `viseme_E`, and `viseme_PP`.
-4. **Smoothing**: Exponential attack/decay interpolation ensures fluid, human-like motion.
+2. **Worklet**: A `LipSyncAnalyser` (AudioWorklet) extracts energy levels.
+3. **Mapping**: Frequency data is mapped to core visemes.
+4. **Smoothing**: Exponential attack/decay interpolation ensures fluid motion.
 
-### 🎭 Gesture Engine (`GestureController`)
+### 🎭 Gesture Engine (GestureController)
 Managed by a specialized state machine that handles:
-- **Automatic Transitions**: Idle ↔ Talking (triggered by VAD/Audio stream).
-- **One-Shot Events**: Waving, Pointing, Bowing (triggered by Tool Call intent).
-- **Crossfading**: Smooth 0.5s transitions between animation clips to prevent snapping.
+- **Automatic Transitions**: Idle ↔ Talking.
+- **One-Shot Events**: Waving, Pointing, Bowing.
+- **Crossfading**: Smooth transitions between animation clips.
+
+### 🛠 Avatar Pipeline
+Located in `avatar-pipeline/`, this contains scripts to prepare the GLB model:
+- `setup_pratik_avatar.sh`: The master setup script.
+- `blender_auto_morph_targets.py`: Generates visemes and expressions.
+- `blender_merge_animations.py`: Merges Mixamo animations into the model.
 
 ---
 
-## 🛠 Development Commands
+## 🚀 Getting Started
 
-| Command | Action |
-| :--- | :--- |
-| `npm start` | Launch dev server with hot reload |
-| `npm run build` | Compile production-optimized bundle |
-| `npm test` | Run test suite |
-| `npx tsc --noEmit` | Type-check the entire project |
+1. **Navigate to the app**:
+   ```bash
+   cd receptionist-react
+   ```
 
----
-
-## 🎨 Voice Selection
-
-We currently use the **Algenib** voice profile for its clear, professional, and welcoming tone, perfectly suited for a high-end receptionist role.
+2. **Install & Run**:
+   ```bash
+   npm install
+   npm start
+   ```
 
 ---
 

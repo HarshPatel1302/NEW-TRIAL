@@ -19,19 +19,32 @@ export interface GestureEvent {
 }
 
 type PlayAnimationFn = (name: string, options?: { loop?: boolean; duration?: number }) => void;
+type GetGestureDurationFn = (name: GestureState) => number | undefined;
+
+interface GestureControllerOptions {
+    getGestureDuration?: GetGestureDurationFn;
+}
 
 export class GestureController {
     private currentState: GestureState = 'idle';
     private audioActive = false;
     private audioStopTimeout: ReturnType<typeof setTimeout> | null = null;
+    private talkingStartTimeout: ReturnType<typeof setTimeout> | null = null;
     private gestureReturnTimeout: ReturnType<typeof setTimeout> | null = null;
     private playAnimation: PlayAnimationFn;
+    private getGestureDuration?: GetGestureDurationFn;
 
     /** Debounce time (ms) before transitioning from talking → idle */
-    private static AUDIO_STOP_DELAY = 800;
+    private static AUDIO_STOP_DELAY = 700;
+    /**
+     * Delay entering full talking body animation.
+     * If utterance is very short, stay in idle to prevent visual spikes.
+     */
+    private static TALKING_START_DELAY = 140;
 
-    constructor(playAnimation: PlayAnimationFn) {
+    constructor(playAnimation: PlayAnimationFn, options: GestureControllerOptions = {}) {
         this.playAnimation = playAnimation;
+        this.getGestureDuration = options.getGestureDuration;
     }
 
     /**
@@ -63,6 +76,7 @@ export class GestureController {
 
     destroy(): void {
         if (this.audioStopTimeout) clearTimeout(this.audioStopTimeout);
+        if (this.talkingStartTimeout) clearTimeout(this.talkingStartTimeout);
         if (this.gestureReturnTimeout) clearTimeout(this.gestureReturnTimeout);
     }
 
@@ -81,11 +95,24 @@ export class GestureController {
         if (this.currentState === 'talking') return;
         if (this.isOneShot(this.currentState)) return; // let gesture finish
 
-        this.transitionTo('talking');
+        // Talking-lite: short utterances should not trigger full body talking animation.
+        if (!this.talkingStartTimeout) {
+            this.talkingStartTimeout = setTimeout(() => {
+                this.talkingStartTimeout = null;
+                if (this.audioActive && this.currentState === 'idle') {
+                    this.transitionTo('talking');
+                }
+            }, GestureController.TALKING_START_DELAY);
+        }
     }
 
     private onAudioStop(): void {
         this.audioActive = false;
+
+        if (this.talkingStartTimeout) {
+            clearTimeout(this.talkingStartTimeout);
+            this.talkingStartTimeout = null;
+        }
 
         // Cancel any existing timeout
         if (this.audioStopTimeout) {
@@ -138,6 +165,11 @@ export class GestureController {
     }
 
     private getDefaultDuration(gesture: GestureState): number {
+        const resolved = this.getGestureDuration?.(gesture);
+        if (resolved && resolved > 0) {
+            return resolved;
+        }
+
         switch (gesture) {
             case 'waving': return 2.5;
             case 'pointing': return 2;

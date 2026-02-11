@@ -4,29 +4,35 @@ import { Environment } from '@react-three/drei';
 import { AvatarModelUnified as AvatarModel, AvatarModelRef } from './AvatarModelUnified';
 import { LoadingScreen } from './LoadingScreen';
 import { LipSyncData } from '../../lib/audio-streamer';
+import { ExpressionCue } from './facial-types';
 import './Avatar3D.css';
 
 export interface Avatar3DRef {
     playAnimation: (name: string, options?: { loop?: boolean; duration?: number }) => void;
+    getAnimationDuration: (name: string) => number | null;
     setSpeechBubble: (text: string) => void;
     clearSpeechBubble: () => void;
 }
 
 interface Avatar3DProps {
     speechText?: string;
+    expressionCue?: ExpressionCue;
     connected?: boolean;
     isAudioPlaying?: boolean;
     lipSyncRef?: React.MutableRefObject<LipSyncData>;
 }
 
 export const Avatar3D = React.forwardRef<Avatar3DRef, Avatar3DProps>((props, ref) => {
-    const { speechText, isAudioPlaying, lipSyncRef } = props;
+    const { speechText, expressionCue, isAudioPlaying, lipSyncRef } = props;
     const avatarRef = useRef<AvatarModelRef>(null);
 
     // Expose the avatar methods to parent
     React.useImperativeHandle(ref, () => ({
         playAnimation: (name: string, options?: { loop?: boolean; duration?: number }) => {
             avatarRef.current?.playAnimation(name, options);
+        },
+        getAnimationDuration: (name: string) => {
+            return avatarRef.current?.getAnimationDuration(name) ?? null;
         },
         setSpeechBubble: (text: string) => {
             avatarRef.current?.setSpeechBubble(text);
@@ -68,6 +74,7 @@ export const Avatar3D = React.forwardRef<Avatar3DRef, Avatar3DProps>((props, ref
                     <AvatarModel
                         ref={avatarRef}
                         speechText={speechText}
+                        expressionCue={expressionCue}
                         isAudioPlaying={isAudioPlaying}
                         lipSyncRef={lipSyncRef}
                     />
@@ -80,4 +87,3 @@ export const Avatar3D = React.forwardRef<Avatar3DRef, Avatar3DProps>((props, ref
 Avatar3D.displayName = 'Avatar3D';
 
 export default Avatar3D;
-

@@ -9,6 +9,7 @@
  *   lowBand — energy 0–300Hz   (jaw open, vowels)
  *   midBand — energy 300–2kHz  (tongue/lip shapes)
  *   highBand— energy 2kHz+     (sibilants: s, t, f)
+ *   voiced, plosive, sibilance, envelope — derived speech features
  * 
  * NOTE: This string is passed to createWorketFromSrc() which wraps it in
  * registerProcessor("lip-sync-analyser", <this class>). So do NOT include
@@ -23,6 +24,9 @@ const LipSyncAnalyserWorklet = `
       this._frameSize = 400;
       this._buffer = new Float32Array(this._frameSize);
       this._writeIndex = 0;
+      this._envelope = 0;
+      this._prevVolume = 0;
+      this._noiseFloor = 0.0025;
     }
 
     process(inputs) {
@@ -69,11 +73,37 @@ const LipSyncAnalyserWorklet = `
       var midBand  = Math.min(1, (midEnergy / maxE) * scaledVol);
       var highBand = Math.min(1, (highEnergy / maxE) * scaledVol);
 
+      // Envelope with fast attack + slower decay for stable mouth movement
+      var rawVol = Math.max(0, volume - this._noiseFloor);
+      var attack = 0.45;
+      var decay = 0.12;
+      if (rawVol > this._envelope) {
+        this._envelope += (rawVol - this._envelope) * attack;
+      } else {
+        this._envelope += (rawVol - this._envelope) * decay;
+      }
+
+      // Approximate voiced/plosive/sibilance features for richer viseme mapping
+      var voiced = Math.min(1, Math.max(0,
+        ((lowBand * 0.7 + midBand * 0.6) - (highBand * 0.25))
+      ));
+
+      var volumeDrop = Math.max(0, this._prevVolume - volume);
+      var plosive = Math.min(1, volumeDrop * 7 + highBand * 0.35);
+
+      var sibilance = Math.min(1, Math.max(0, highBand - lowBand * 0.35));
+
+      this._prevVolume = volume;
+
       this.port.postMessage({
         volume:   Math.min(1, volume * 5),
         lowBand:  lowBand,
         midBand:  midBand,
-        highBand: highBand
+        highBand: highBand,
+        voiced: voiced,
+        plosive: plosive,
+        sibilance: sibilance,
+        envelope: Math.min(1, this._envelope * 8)
       });
     }
 
