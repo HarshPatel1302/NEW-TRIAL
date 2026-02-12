@@ -35,11 +35,12 @@ const CROSSFADE_DURATION = 0.5;
 const AUDIO_STALE_MS = 250;
 const HEAD_YAW_LIMIT = 0.72;
 const HEAD_PITCH_DOWN_LIMIT = -0.34;
-const HEAD_PITCH_UP_LIMIT = 0.16;
+const HEAD_PITCH_UP_LIMIT = 0.0009;
 const HEAD_TRACK_HEIGHT = 1.62;
 const HEAD_PITCH_BIAS = -0.14;
 const MIN_ACTION_SPEED = 0.3;
 const MAX_ACTION_SPEED = 0.6;
+const IDLE_CLIP_NAME = 'idle';
 const MODEL_POSITION: [number, number, number] = [0, -1.85, 0];
 const BASE_MODEL_SCALE = 1.75;
 const MIN_RESPONSIVE_SCALE = 0.85;
@@ -119,6 +120,11 @@ export const AvatarModelUnified = React.forwardRef<AvatarModelRef, AvatarModelPr
         const idleAction = actions.idle || actions[Object.keys(actions)[0]];
         if (idleAction) {
             idleAction.reset().play();
+            if (idleAction.getClip().name === IDLE_CLIP_NAME) {
+                // Freeze idle on the first frame to avoid constant breathing motion.
+                idleAction.time = 0;
+                idleAction.setEffectiveTimeScale(0);
+            }
             currentActionRef.current = idleAction;
         }
     }, [scene, animations, actions]);
@@ -154,7 +160,11 @@ export const AvatarModelUnified = React.forwardRef<AvatarModelRef, AvatarModelPr
             );
             next.setEffectiveTimeScale(speed);
         } else {
-            next.setEffectiveTimeScale(1);
+            next.setEffectiveTimeScale(name === IDLE_CLIP_NAME ? 0 : 1);
+            if (name === IDLE_CLIP_NAME) {
+                // Keep the avatar in a static standing pose whenever returning to idle.
+                next.time = 0;
+            }
         }
         next.play();
 
