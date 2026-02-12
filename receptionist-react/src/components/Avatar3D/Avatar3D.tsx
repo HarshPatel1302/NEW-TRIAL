@@ -60,8 +60,6 @@ export const Avatar3D = React.forwardRef<Avatar3DRef, Avatar3DProps>((props, ref
                     alpha: true
                 }}
             >
-                <color attach="background" args={['#1a237e']} />
-
                 {/* Industry-standard lighting for PBR materials */}
                 <ambientLight intensity={0.6} />
                 <directionalLight position={[10, 10, 5]} intensity={1} castShadow />

@@ -67,6 +67,8 @@ function ReceptionistApp() {
   const [lastAudioText, setLastAudioText] = useState<string>("");
   const [expressionCue, setExpressionCue] = useState<ExpressionCue>("neutral_professional");
   const prevAssistantAudioPlayingRef = useRef(false);
+  const sessionIdRef = useRef<string | null>(null);
+  const lastLoggedAssistantTextRef = useRef<string>("");
 
   const { client, setConfig, setModel, connected, lipSyncRef, assistantAudioPlaying } = useLiveAPIContext();
 
@@ -219,6 +221,34 @@ function ReceptionistApp() {
     }
   }, []);
 
+  // ── Session Lifecycle (PostgreSQL backend) ───────────────────────
+  useEffect(() => {
+    let cancelled = false;
+
+    if (connected) {
+      const kioskId = process.env.REACT_APP_KIOSK_ID || "greenscape-lobby-kiosk";
+      void DatabaseManager.startSession({ kioskId }).then((sessionId) => {
+        if (!cancelled && sessionId) {
+          sessionIdRef.current = sessionId;
+        }
+      });
+    } else {
+      lastLoggedAssistantTextRef.current = "";
+      const activeSessionId = sessionIdRef.current;
+      sessionIdRef.current = null;
+      if (activeSessionId) {
+        void DatabaseManager.endSession(activeSessionId, {
+          status: "disconnected",
+          summary: "Live connection closed before explicit end_interaction.",
+        });
+      }
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [connected]);
+
   // ── AUTO-GREETING ─────────────────────────────────────────────────
   useEffect(() => {
     let cueTimer: ReturnType<typeof setTimeout> | null = null;
@@ -297,6 +327,17 @@ function ReceptionistApp() {
       if (!text) return;
 
       setLastAudioText(text);
+      if (text !== lastLoggedAssistantTextRef.current) {
+        lastLoggedAssistantTextRef.current = text;
+        const activeSessionId = sessionIdRef.current;
+        if (activeSessionId) {
+          void DatabaseManager.logSessionEvent(activeSessionId, {
+            role: "assistant",
+            eventType: "assistant_response",
+            content: text,
+          });
+        }
+      }
       if (speechClearTimerRef.current) {
         clearTimeout(speechClearTimerRef.current);
       }
@@ -328,6 +369,15 @@ function ReceptionistApp() {
       for (const fc of toolCall.functionCalls) {
         let result: any = { error: "Unknown tool" };
         const { name, args } = fc;
+        const activeSessionId = sessionIdRef.current;
+
+        if (activeSessionId) {
+          void DatabaseManager.logSessionEvent(activeSessionId, {
+            role: "tool",
+            eventType: `tool_call:${name}`,
+            content: JSON.stringify(args || {}),
+          });
+        }
 
         try {
           if (name === "classify_intent") {
@@ -355,6 +405,9 @@ function ReceptionistApp() {
               intent: args.detected_intent,
               message: `Intent classified as ${args.detected_intent}`
             };
+            if (activeSessionId) {
+              void DatabaseManager.updateSession(activeSessionId, { intent: args.detected_intent });
+            }
           }
           else if (name === "collect_slot_value") {
             setConversationState(prev => ({
@@ -382,11 +435,17 @@ function ReceptionistApp() {
               appointmentTime: args.appointment_time,
               referenceId: args.reference_id,
               notes: args.notes
-            });
+            }, { sessionId: activeSessionId });
             result = { status: "success", visitor_id: visitor.id };
+            if (activeSessionId) {
+              void DatabaseManager.updateSession(activeSessionId, {
+                visitorId: visitor.id,
+                intent: args.intent || conversationState.intent || "unknown",
+              });
+            }
           }
           else if (name === "check_returning_visitor") {
-            const visitor = DatabaseManager.findByPhone(args.phone);
+            const visitor = await DatabaseManager.findByPhone(args.phone);
             result = visitor
               ? { is_returning: true, last_visit: visitor.timestamp, name: visitor.name }
               : { is_returning: false };
@@ -432,13 +491,20 @@ function ReceptionistApp() {
               company: args.company,
               referenceId: args.tracking_number,
               notes: args.description
-            });
+            }, { sessionId: activeSessionId });
             result = {
               status: "success",
               message: `Delivery logged for ${args.department}`
             };
           }
           else if (name === "end_interaction") {
+            if (activeSessionId) {
+              await DatabaseManager.endSession(activeSessionId, {
+                status: "completed",
+                summary: "Interaction completed through end_interaction tool.",
+              });
+              sessionIdRef.current = null;
+            }
             setExpressionCue("goodbye_formal");
             fireGesture('bow', undefined, 3);
             console.log("Interaction ended. Resetting in 5 seconds...");

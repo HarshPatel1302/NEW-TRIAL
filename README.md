@@ -75,10 +75,50 @@ lsof -ti:3000 | xargs kill -9 && cd receptionist-react && npm start
 
 ---
 
+## 🗄 PostgreSQL Visitor Storage + Excel Export
+
+The project now includes a backend service in `backend/` for production visitor logs and export.
+
+### Start backend database + API
+
+```bash
+cd backend
+docker compose up -d
+npm install
+cp .env.example .env
+npm run db:init
+npm run dev
+```
+
+### Configure frontend to use backend
+
+In `receptionist-react/.env.local`:
+
+```env
+REACT_APP_RECEPTIONIST_API_URL=http://localhost:5000/api
+REACT_APP_KIOSK_ID=greenscape-lobby-kiosk-1
+```
+
+Then run frontend:
+
+```bash
+cd receptionist-react
+npm start
+```
+
+### Export links
+
+- Visitors CSV: `http://localhost:5000/api/exports/visitors.csv`
+- Visitors Excel: `http://localhost:5000/api/exports/visitors.xlsx`
+- Sessions CSV: `http://localhost:5000/api/exports/sessions.csv`
+
+---
+
 ## 🏗 Repository Structure
 
 - `receptionist-react/`: The main React application powered by Gemini Multimodal Live API.
 - `avatar-pipeline/`: Tools and scripts for processing the 3D avatar (Blender/Python).
+- `backend/`: Express + PostgreSQL API for visitors, sessions, and exports.
 - `.agent/`: Agent-specific workflows and configurations.
 
 ---
