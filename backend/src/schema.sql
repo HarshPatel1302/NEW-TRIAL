@@ -48,3 +48,19 @@ CREATE TABLE IF NOT EXISTS conversation_events (
 
 CREATE INDEX IF NOT EXISTS conversation_events_session_id_idx ON conversation_events (session_id);
 CREATE INDEX IF NOT EXISTS conversation_events_created_at_idx ON conversation_events (created_at DESC);
+
+CREATE TABLE IF NOT EXISTS api_audit_logs (
+    id BIGSERIAL PRIMARY KEY,
+    method TEXT NOT NULL,
+    route TEXT NOT NULL,
+    status_code INTEGER NOT NULL,
+    duration_ms INTEGER NOT NULL,
+    ip_address TEXT,
+    user_agent TEXT,
+    kiosk_id TEXT,
+    request_id TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS api_audit_logs_created_at_idx ON api_audit_logs (created_at DESC);
+CREATE INDEX IF NOT EXISTS api_audit_logs_route_idx ON api_audit_logs (route);

@@ -3,6 +3,11 @@ const cors = require("cors");
 const dotenv = require("dotenv");
 const XLSX = require("xlsx");
 const { query } = require("./db");
+const {
+  buildAuthMiddleware,
+  buildRateLimiter,
+  buildAuditMiddleware,
+} = require("./middleware");
 
 dotenv.config();
 
@@ -13,8 +18,11 @@ const corsOrigin = process.env.CORS_ORIGIN
   ? process.env.CORS_ORIGIN.split(",").map((origin) => origin.trim())
   : true;
 
+app.set("trust proxy", true);
 app.use(cors({ origin: corsOrigin }));
 app.use(express.json({ limit: "1mb" }));
+app.use(buildRateLimiter());
+app.use(buildAuditMiddleware());
 
 function normalizePhone(phone) {
   if (!phone) return null;
@@ -46,14 +54,46 @@ function csvEscape(value) {
   return `"${escaped}"`;
 }
 
+function parseLimit(raw, defaultValue = 100, maxValue = 1000) {
+  const value = Number(raw || defaultValue);
+  if (!Number.isFinite(value) || value <= 0) return defaultValue;
+  return Math.min(Math.floor(value), maxValue);
+}
+
+function parseDays(raw, defaultValue = 30, maxValue = 365) {
+  const value = Number(raw || defaultValue);
+  if (!Number.isFinite(value) || value <= 0) return defaultValue;
+  return Math.min(Math.floor(value), maxValue);
+}
+
+async function dbReady() {
+  await query("SELECT 1");
+}
+
+app.get("/api/health/live", (_req, res) => {
+  res.json({ ok: true, service: "receptionist-backend" });
+});
+
+app.get("/api/health/ready", async (_req, res) => {
+  try {
+    await dbReady();
+    res.json({ ok: true, database: "reachable" });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
 app.get("/api/health", async (_req, res) => {
   try {
-    await query("SELECT 1");
+    await dbReady();
     res.json({ ok: true });
   } catch (error) {
     res.status(500).json({ ok: false, error: error.message });
   }
 });
+
+// Everything below /api (except health above) requires API key if BACKEND_API_KEY is configured.
+app.use("/api", buildAuthMiddleware());
 
 app.post("/api/visitors/upsert", async (req, res) => {
   const {
@@ -186,7 +226,7 @@ app.get("/api/visitors/search", async (req, res) => {
 });
 
 app.get("/api/visitors", async (req, res) => {
-  const limit = Math.min(Number(req.query.limit || 200), 1000);
+  const limit = parseLimit(req.query.limit, 200, 5000);
   try {
     const result = await query(
       `SELECT * FROM visitors
@@ -195,6 +235,67 @@ app.get("/api/visitors", async (req, res) => {
       [limit]
     );
     return res.json({ visitors: result.rows.map(toVisitorDto) });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+app.get("/api/sessions", async (req, res) => {
+  const limit = parseLimit(req.query.limit, 200, 5000);
+  const status = req.query.status ? String(req.query.status) : null;
+  const intent = req.query.intent ? String(req.query.intent) : null;
+  const from = req.query.from ? String(req.query.from) : null;
+  const to = req.query.to ? String(req.query.to) : null;
+
+  const conditions = [];
+  const values = [];
+  let idx = 1;
+
+  if (status) {
+    conditions.push(`s.status = $${idx++}`);
+    values.push(status);
+  }
+  if (intent) {
+    conditions.push(`s.intent = $${idx++}`);
+    values.push(intent);
+  }
+  if (from) {
+    conditions.push(`s.started_at >= $${idx++}::timestamptz`);
+    values.push(from);
+  }
+  if (to) {
+    conditions.push(`s.started_at <= $${idx++}::timestamptz`);
+    values.push(to);
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  values.push(limit);
+  const limitParam = `$${idx}`;
+
+  try {
+    const result = await query(
+      `SELECT
+        s.id,
+        s.kiosk_id,
+        s.status,
+        s.intent,
+        s.summary,
+        s.started_at,
+        s.ended_at,
+        s.created_at,
+        s.updated_at,
+        s.visitor_id,
+        v.name AS visitor_name,
+        v.phone AS visitor_phone
+      FROM sessions s
+      LEFT JOIN visitors v ON v.id = s.visitor_id
+      ${whereClause}
+      ORDER BY s.started_at DESC
+      LIMIT ${limitParam}`,
+      values
+    );
+
+    return res.json({ sessions: result.rows });
   } catch (error) {
     return res.status(500).json({ error: error.message });
   }
@@ -280,6 +381,28 @@ app.post("/api/sessions/:id/events", async (req, res) => {
   }
 });
 
+app.get("/api/sessions/:id/events", async (req, res) => {
+  const sessionId = Number(req.params.id);
+  if (!Number.isFinite(sessionId)) {
+    return res.status(400).json({ error: "Invalid session id" });
+  }
+  const limit = parseLimit(req.query.limit, 500, 5000);
+
+  try {
+    const result = await query(
+      `SELECT id, session_id, role, event_type, content, raw_payload, created_at
+       FROM conversation_events
+       WHERE session_id = $1
+       ORDER BY created_at DESC
+       LIMIT $2`,
+      [sessionId, limit]
+    );
+    return res.json({ events: result.rows });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
 app.post("/api/sessions/:id/end", async (req, res) => {
   const sessionId = Number(req.params.id);
   if (!Number.isFinite(sessionId)) {
@@ -302,6 +425,118 @@ app.post("/api/sessions/:id/end", async (req, res) => {
     }
 
     return res.json({ session: result.rows[0] });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+app.get("/api/analytics/summary", async (req, res) => {
+  const days = parseDays(req.query.days, 30, 3650);
+
+  try {
+    const [visitors, sessions, topIntents, avgDuration, byStatus] = await Promise.all([
+      query(`SELECT COUNT(*)::int AS total FROM visitors`),
+      query(
+        `SELECT
+           COUNT(*)::int AS total_sessions,
+           COUNT(*) FILTER (WHERE status = 'completed')::int AS completed_sessions,
+           COUNT(*) FILTER (WHERE started_at >= NOW() - ($1::int * INTERVAL '1 day'))::int AS recent_sessions
+         FROM sessions`,
+        [days]
+      ),
+      query(
+        `SELECT COALESCE(intent, 'unknown') AS intent, COUNT(*)::int AS count
+         FROM sessions
+         WHERE started_at >= NOW() - ($1::int * INTERVAL '1 day')
+         GROUP BY 1
+         ORDER BY count DESC
+         LIMIT 5`,
+        [days]
+      ),
+      query(
+        `SELECT
+           COALESCE(
+             ROUND(AVG(EXTRACT(EPOCH FROM (ended_at - started_at)))::numeric, 2),
+             0
+           ) AS avg_seconds
+         FROM sessions
+         WHERE ended_at IS NOT NULL
+           AND started_at >= NOW() - ($1::int * INTERVAL '1 day')`,
+        [days]
+      ),
+      query(
+        `SELECT status, COUNT(*)::int AS count
+         FROM sessions
+         WHERE started_at >= NOW() - ($1::int * INTERVAL '1 day')
+         GROUP BY status
+         ORDER BY count DESC`,
+        [days]
+      ),
+    ]);
+
+    return res.json({
+      rangeDays: days,
+      totalVisitors: visitors.rows[0]?.total || 0,
+      totalSessions: sessions.rows[0]?.total_sessions || 0,
+      completedSessions: sessions.rows[0]?.completed_sessions || 0,
+      recentSessions: sessions.rows[0]?.recent_sessions || 0,
+      averageSessionSeconds: Number(avgDuration.rows[0]?.avg_seconds || 0),
+      topIntents: topIntents.rows,
+      sessionsByStatus: byStatus.rows,
+    });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+app.get("/api/analytics/daily", async (req, res) => {
+  const days = parseDays(req.query.days, 30, 3650);
+
+  try {
+    const [sessionsDaily, visitorsDaily] = await Promise.all([
+      query(
+        `SELECT
+          to_char(date_trunc('day', started_at), 'YYYY-MM-DD') AS day,
+          COUNT(*)::int AS sessions
+         FROM sessions
+         WHERE started_at >= NOW() - ($1::int * INTERVAL '1 day')
+         GROUP BY date_trunc('day', started_at)
+         ORDER BY day ASC`,
+        [days]
+      ),
+      query(
+        `SELECT
+          to_char(date_trunc('day', created_at), 'YYYY-MM-DD') AS day,
+          COUNT(*)::int AS visitors
+         FROM visitors
+         WHERE created_at >= NOW() - ($1::int * INTERVAL '1 day')
+         GROUP BY date_trunc('day', created_at)
+         ORDER BY day ASC`,
+        [days]
+      ),
+    ]);
+
+    return res.json({
+      rangeDays: days,
+      sessionsDaily: sessionsDaily.rows,
+      visitorsDaily: visitorsDaily.rows,
+    });
+  } catch (error) {
+    return res.status(500).json({ error: error.message });
+  }
+});
+
+app.get("/api/audit-logs", async (req, res) => {
+  const limit = parseLimit(req.query.limit, 200, 5000);
+  try {
+    const result = await query(
+      `SELECT id, method, route, status_code, duration_ms, ip_address, user_agent, kiosk_id, request_id, created_at
+       FROM api_audit_logs
+       ORDER BY created_at DESC
+       LIMIT $1`,
+      [limit]
+    );
+    return res.json({ logs: result.rows });
   } catch (error) {
     return res.status(500).json({ error: error.message });
   }

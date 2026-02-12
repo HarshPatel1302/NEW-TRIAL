@@ -40,6 +40,8 @@ type SessionEventPayload = {
 export class DatabaseManager {
     private static STORAGE_KEY = 'greenscape_visitors';
     private static API_BASE = process.env.REACT_APP_RECEPTIONIST_API_URL || 'http://localhost:5000/api';
+    private static API_KEY = process.env.REACT_APP_RECEPTIONIST_API_KEY || '';
+    private static KIOSK_ID = process.env.REACT_APP_KIOSK_ID || '';
     private static REQUEST_TIMEOUT_MS = 7000;
 
     static async saveVisitor(visitor: VisitorInput, options: { sessionId?: string | null } = {}): Promise<Visitor> {
@@ -198,8 +200,17 @@ export class DatabaseManager {
         );
 
         try {
+            const headers = new Headers(init.headers || {});
+            if (this.API_KEY) {
+                headers.set('x-api-key', this.API_KEY);
+            }
+            if (this.KIOSK_ID) {
+                headers.set('x-kiosk-id', this.KIOSK_ID);
+            }
+
             const response = await fetch(`${this.API_BASE}${path}`, {
                 ...init,
+                headers,
                 signal: controller.signal,
             });
 

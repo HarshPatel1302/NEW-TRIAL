@@ -25,11 +25,9 @@ import { TOOLS } from "./receptionist/tools";
 import { DatabaseManager } from "./receptionist/database";
 import { GestureController, GestureState } from "./components/Avatar3D/gesture-controller";
 import { ExpressionCue } from "./components/Avatar3D/facial-types";
+import AdminDashboard from "./admin/AdminDashboard";
 
-const API_KEY = process.env.REACT_APP_GEMINI_API_KEY as string;
-if (typeof API_KEY !== "string") {
-  throw new Error("set REACT_APP_GEMINI_API_KEY in .env");
-}
+const API_KEY = (process.env.REACT_APP_GEMINI_API_KEY || "").trim();
 
 const apiOptions: LiveClientOptions = {
   apiKey: API_KEY,
@@ -69,6 +67,7 @@ function ReceptionistApp() {
   const prevAssistantAudioPlayingRef = useRef(false);
   const sessionIdRef = useRef<string | null>(null);
   const lastLoggedAssistantTextRef = useRef<string>("");
+  const assistantPauseDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const { client, setConfig, setModel, connected, lipSyncRef, assistantAudioPlaying } = useLiveAPIContext();
 
@@ -175,6 +174,9 @@ function ReceptionistApp() {
       }
       if (speechClearTimerRef.current) {
         clearTimeout(speechClearTimerRef.current);
+      }
+      if (assistantPauseDebounceRef.current) {
+        clearTimeout(assistantPauseDebounceRef.current);
       }
     };
   }, [resolveGestureDuration]);
@@ -287,11 +289,19 @@ function ReceptionistApp() {
       if (prev) {
         gestureControllerRef.current?.handleEvent({ type: 'audioStop' });
       }
+      if (assistantPauseDebounceRef.current) {
+        clearTimeout(assistantPauseDebounceRef.current);
+        assistantPauseDebounceRef.current = null;
+      }
       prevAssistantAudioPlayingRef.current = false;
       return;
     }
 
     if (assistantAudioPlaying && !prev) {
+      if (assistantPauseDebounceRef.current) {
+        clearTimeout(assistantPauseDebounceRef.current);
+        assistantPauseDebounceRef.current = null;
+      }
       if (speechClearTimerRef.current) {
         clearTimeout(speechClearTimerRef.current);
       }
@@ -300,18 +310,54 @@ function ReceptionistApp() {
     }
 
     if (!assistantAudioPlaying && prev) {
-      setExpressionCue("listening_attentive");
-      gestureControllerRef.current?.handleEvent({ type: 'audioStop' });
-      if (speechClearTimerRef.current) {
-        clearTimeout(speechClearTimerRef.current);
+      if (assistantPauseDebounceRef.current) {
+        clearTimeout(assistantPauseDebounceRef.current);
       }
-      speechClearTimerRef.current = setTimeout(() => {
-        setLastAudioText("");
-      }, 1800);
+      assistantPauseDebounceRef.current = setTimeout(() => {
+        assistantPauseDebounceRef.current = null;
+        setExpressionCue("listening_attentive");
+        gestureControllerRef.current?.handleEvent({ type: 'audioStop' });
+        if (speechClearTimerRef.current) {
+          clearTimeout(speechClearTimerRef.current);
+        }
+        speechClearTimerRef.current = setTimeout(() => {
+          setLastAudioText("");
+        }, 1800);
+      }, 240);
     }
 
     prevAssistantAudioPlayingRef.current = assistantAudioPlaying;
   }, [assistantAudioPlaying, connected]);
+
+  // Strong interruption handling: immediately bring avatar back to listening.
+  useEffect(() => {
+    const onInterrupted = () => {
+      if (assistantPauseDebounceRef.current) {
+        clearTimeout(assistantPauseDebounceRef.current);
+        assistantPauseDebounceRef.current = null;
+      }
+      setExpressionCue("listening_attentive");
+      gestureControllerRef.current?.handleEvent({ type: "audioStop" });
+      if (speechClearTimerRef.current) {
+        clearTimeout(speechClearTimerRef.current);
+      }
+      setLastAudioText("");
+
+      const activeSessionId = sessionIdRef.current;
+      if (activeSessionId) {
+        void DatabaseManager.logSessionEvent(activeSessionId, {
+          role: "system",
+          eventType: "assistant_interrupted",
+          content: "User interrupted assistant playback.",
+        });
+      }
+    };
+
+    client.on("interrupted", onInterrupted);
+    return () => {
+      client.off("interrupted", onInterrupted);
+    };
+  }, [client]);
 
   // ── Model Text Content → Speech Bubble ───────────────────────────
   useEffect(() => {
@@ -597,6 +643,29 @@ function ReceptionistApp() {
 }
 
 function App() {
+  const isAdminPath =
+    typeof window !== "undefined" &&
+    window.location.pathname.toLowerCase().startsWith("/admin");
+
+  if (isAdminPath) {
+    return <AdminDashboard />;
+  }
+
+  if (!API_KEY) {
+    return (
+      <div className="app-container">
+        <main className="app-main">
+          <div className="main-app-area">
+            <h1 className="app-title">Greenscape Receptionist</h1>
+            <p className="status-text">
+              Missing `REACT_APP_GEMINI_API_KEY` in frontend environment.
+            </p>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
   return (
     <LiveAPIProvider options={apiOptions}>
       <ReceptionistApp />

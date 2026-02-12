@@ -96,6 +96,7 @@ In `receptionist-react/.env.local`:
 
 ```env
 REACT_APP_RECEPTIONIST_API_URL=http://localhost:5000/api
+REACT_APP_RECEPTIONIST_API_KEY=change_this_key
 REACT_APP_KIOSK_ID=greenscape-lobby-kiosk-1
 ```
 
@@ -111,6 +112,37 @@ npm start
 - Visitors CSV: `http://localhost:5000/api/exports/visitors.csv`
 - Visitors Excel: `http://localhost:5000/api/exports/visitors.xlsx`
 - Sessions CSV: `http://localhost:5000/api/exports/sessions.csv`
+
+### Admin dashboard
+
+Open:
+
+- `http://localhost:3000/admin`
+
+The admin view includes KPI cards, daily analytics, recent sessions, per-session event drill-down, visitors list, and audit logs.
+
+### Maintenance scripts
+
+```bash
+cd backend
+npm run retention:run
+npm run backup:run
+```
+
+### Production deployment (Docker Compose + edge proxy)
+
+```bash
+cp .env.production.example .env.production
+docker compose --env-file .env.production -f docker-compose.production.yml up -d --build
+```
+
+Production entrypoint:
+
+- `http://localhost:8080`
+
+Notes:
+- Backend container auto-runs `node src/init-db.js` at startup before serving traffic.
+- Set `BACKEND_API_KEY` in `.env.production`; frontend admin/receptionist requests include this key.
 
 ---
 
