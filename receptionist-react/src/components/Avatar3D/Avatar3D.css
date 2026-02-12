@@ -1,0 +1,96 @@
+.avatar-container {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+}
+
+.avatar-container canvas {
+  width: 100% !important;
+  height: 100% !important;
+  display: block;
+}
+
+/* Loading overlay */
+.avatar-loading {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.5);
+  color: white;
+  z-index: 10;
+  transition: opacity 0.5s ease-out;
+}
+
+.avatar-loading.fade-out {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.loading-progress {
+  width: 200px;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+  overflow: hidden;
+  margin-top: 20px;
+}
+
+.loading-bar {
+  height: 100%;
+  background: linear-gradient(90deg, #4a90e2, #67c8ff);
+  transition: width 0.3s ease;
+}
+
+.loading-text {
+  font-size: 14px;
+  font-weight: 500;
+  margin-top: 10px;
+  font-family: sans-serif;
+}
+
+/* Speech bubble */
+.speech-bubble {
+  background: white;
+  color: #333;
+  padding: 12px 16px;
+  border-radius: 12px;
+  font-size: 14px;
+  font-family: sans-serif;
+  max-width: 300px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  position: relative;
+  animation: fadeIn 0.3s ease-in;
+}
+
+.speech-bubble::after {
+  content: '';
+  position: absolute;
+  bottom: -8px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 0;
+  height: 0;
+  border-left: 8px solid transparent;
+  border-right: 8px solid transparent;
+  border-top: 8px solid white;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
