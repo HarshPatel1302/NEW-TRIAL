@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { useFrame } from '@react-three/fiber';
+import { useFrame, useThree } from '@react-three/fiber';
 import { useGLTF, useAnimations } from '@react-three/drei';
 import * as THREE from 'three';
 import { LipSyncData } from '../../lib/audio-streamer';
@@ -39,9 +39,11 @@ const HEAD_PITCH_UP_LIMIT = 0.16;
 const HEAD_TRACK_HEIGHT = 1.62;
 const HEAD_PITCH_BIAS = -0.14;
 const MIN_ACTION_SPEED = 0.3;
-const MAX_ACTION_SPEED = 0.8;
-const MODEL_POSITION: [number, number, number] = [0, -2.38, 0];
-const MODEL_SCALE: [number, number, number] = [1.72, 1.72, 1.72];
+const MAX_ACTION_SPEED = 0.6;
+const MODEL_POSITION: [number, number, number] = [0, -1.85, 0];
+const BASE_MODEL_SCALE = 1.75;
+const MIN_RESPONSIVE_SCALE = 0.85;
+const MAX_RESPONSIVE_SCALE = 1.2;
 
 // Preload the default model for faster initial render.
 useGLTF.preload(MODEL_PATHS[DEFAULT_MODEL_VERSION]);
@@ -58,6 +60,7 @@ export const AvatarModelUnified = React.forwardRef<AvatarModelRef, AvatarModelPr
     const modelPath = MODEL_PATHS[resolvedVersion];
 
     const group = useRef<THREE.Group>(null);
+    const { size } = useThree();
     const { scene, animations } = useGLTF(modelPath);
     const { actions, mixer } = useAnimations(animations, group);
 
@@ -71,6 +74,12 @@ export const AvatarModelUnified = React.forwardRef<AvatarModelRef, AvatarModelPr
 
     const [headBone, setHeadBone] = useState<THREE.Bone | null>(null);
     const [allMeshesWithMorphs, setAllMeshesWithMorphs] = useState<THREE.Mesh[]>([]);
+    const responsiveScaleFactor = THREE.MathUtils.clamp(
+        size.width / 1200,
+        MIN_RESPONSIVE_SCALE,
+        MAX_RESPONSIVE_SCALE,
+    );
+    const resolvedModelScale = BASE_MODEL_SCALE * responsiveScaleFactor;
 
     useEffect(() => {
         const meshes: THREE.Mesh[] = [];
@@ -229,7 +238,11 @@ export const AvatarModelUnified = React.forwardRef<AvatarModelRef, AvatarModelPr
     });
 
     return (
-        <group ref={group} position={MODEL_POSITION} scale={MODEL_SCALE}>
+        <group
+            ref={group}
+            position={MODEL_POSITION}
+            scale={[resolvedModelScale, resolvedModelScale, resolvedModelScale]}
+        >
             <primitive object={scene} />
         </group>
     );

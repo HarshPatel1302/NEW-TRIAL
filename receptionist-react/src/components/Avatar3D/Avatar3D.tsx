@@ -49,9 +49,9 @@ export const Avatar3D = React.forwardRef<Avatar3DRef, Avatar3DProps>((props, ref
 
             <Canvas
                 camera={{
-                    // Upper-body framing (head to waist)
-                    position: [0, 0.68, 1.55],
-                    fov: 46,
+                    // Pull camera back to avoid shoulder/head clipping on narrow screens.
+                    position: [0, 1.5, 4],
+                    fov: 40,
                     near: 0.1,
                     far: 100
                 }}

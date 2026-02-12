@@ -207,6 +207,18 @@ function ReceptionistApp() {
     } as any);
   }, [setConfig, setModel]);
 
+  // Best-effort landscape lock for kiosk devices that allow it.
+  useEffect(() => {
+    const orientation = (typeof window !== "undefined" ? window.screen?.orientation : undefined) as
+      | (ScreenOrientation & { lock?: (orientation: string) => Promise<void> })
+      | undefined;
+    if (orientation?.lock) {
+      void orientation.lock("landscape").catch(() => {
+        // Ignored: many browsers only allow orientation lock in fullscreen/PWA mode.
+      });
+    }
+  }, []);
+
   // ── AUTO-GREETING ─────────────────────────────────────────────────
   useEffect(() => {
     let cueTimer: ReturnType<typeof setTimeout> | null = null;
@@ -472,15 +484,12 @@ function ReceptionistApp() {
   }, [client, conversationState, fireGesture]);
 
   return (
-    <div className="App" style={{ background: 'linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)' }}>
-      <main>
-        <div className="main-app-area" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100vh' }}>
+    <div className="app-container">
+      <main className="app-main">
+        <div className="main-app-area">
+          <h1 className="app-title">Greenscape Receptionist</h1>
 
-          <h1 style={{ color: 'white', fontFamily: 'sans-serif', textAlign: 'center' }}>
-            Greenscape Receptionist
-          </h1>
-
-          <div style={{ margin: '40px 0', width: '100%' }}>
+          <div className="avatar-wrapper">
             <Avatar3D
               ref={avatarRef}
               connected={connected}
@@ -489,10 +498,6 @@ function ReceptionistApp() {
               isAudioPlaying={assistantAudioPlaying}
               lipSyncRef={lipSyncRef}
             />
-          </div>
-
-          <div style={{ color: '#aaa', marginBottom: 20 }}>
-            {connected ? "Listening..." : "Click Start to begin"}
           </div>
 
           <ControlTray

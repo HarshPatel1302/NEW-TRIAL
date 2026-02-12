@@ -1,9 +1,15 @@
 .avatar-container {
   width: 100%;
-  height: min(58vh, 640px);
-  min-height: 430px;
+  height: 100%;
+  min-height: 0;
   position: relative;
-  overflow: visible;
+  overflow: hidden;
+}
+
+.avatar-container canvas {
+  width: 100% !important;
+  height: 100% !important;
+  display: block;
 }
 
 /* Loading overlay */
