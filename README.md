@@ -100,6 +100,10 @@ REACT_APP_RECEPTIONIST_API_KEY=change_this_key
 REACT_APP_KIOSK_ID=greenscape-lobby-kiosk-1
 ```
 
+Recommended backend rate-limit defaults for kiosk + live admin:
+- `RATE_LIMIT_WINDOW_MS=60000`
+- `RATE_LIMIT_MAX=600`
+
 Then run frontend:
 
 ```bash

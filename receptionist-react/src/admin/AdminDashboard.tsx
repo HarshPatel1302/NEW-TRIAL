@@ -67,6 +67,7 @@ type AuditLogRow = {
 const API_BASE = process.env.REACT_APP_RECEPTIONIST_API_URL || "http://localhost:5000/api";
 const API_KEY = process.env.REACT_APP_RECEPTIONIST_API_KEY || "";
 const KIOSK_ID = process.env.REACT_APP_KIOSK_ID || "greenscape-lobby-kiosk-1";
+const AUTO_REFRESH_MS = 5000;
 
 const jsonHeaders: HeadersInit = {
   "Content-Type": "application/json",
@@ -138,6 +139,22 @@ export default function AdminDashboard() {
   const [error, setError] = useState<string>("");
   const [downloading, setDownloading] = useState<string>("");
 
+  const loadSessionEvents = useCallback(async (sessionId: string) => {
+    if (!sessionId) {
+      setEvents([]);
+      return;
+    }
+
+    try {
+      const res = await fetchJson<{ events: EventRow[] }>(
+        `/sessions/${sessionId}/events?limit=500`
+      );
+      setEvents(res.events || []);
+    } catch {
+      setEvents([]);
+    }
+  }, []);
+
   const refresh = useCallback(async () => {
     setLoading(true);
     setError("");
@@ -176,23 +193,22 @@ export default function AdminDashboard() {
       return;
     }
 
-    let cancelled = false;
-    void fetchJson<{ events: EventRow[] }>(`/sessions/${selectedSessionId}/events?limit=500`)
-      .then((res) => {
-        if (!cancelled) {
-          setEvents(res.events || []);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setEvents([]);
-        }
-      });
+    void loadSessionEvents(selectedSessionId);
+  }, [selectedSessionId, loadSessionEvents]);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (document.hidden) return;
+      void refresh();
+      if (selectedSessionId) {
+        void loadSessionEvents(selectedSessionId);
+      }
+    }, AUTO_REFRESH_MS);
 
     return () => {
-      cancelled = true;
+      clearInterval(interval);
     };
-  }, [selectedSessionId]);
+  }, [refresh, selectedSessionId, loadSessionEvents]);
 
   const completionRate = useMemo(() => {
     if (!summary || summary.totalSessions === 0) return 0;

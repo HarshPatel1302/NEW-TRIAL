@@ -54,9 +54,10 @@ Set these in `backend/.env`:
 ```env
 BACKEND_API_KEY=change_this_key
 RATE_LIMIT_WINDOW_MS=60000
-RATE_LIMIT_MAX=240
+RATE_LIMIT_MAX=600
 RETENTION_DAYS=180
 BACKUP_DIR=./backups
+TRUST_PROXY=false
 ```
 
 `BACKEND_API_KEY` enables API-key auth for all `/api/*` routes except health checks.

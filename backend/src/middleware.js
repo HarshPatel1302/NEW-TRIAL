@@ -40,10 +40,11 @@ function buildAuthMiddleware() {
 
 function buildRateLimiter() {
   const windowMs = Math.max(1000, Number(process.env.RATE_LIMIT_WINDOW_MS || 60000));
-  const max = Math.max(30, Number(process.env.RATE_LIMIT_MAX || 240));
+  const max = Math.max(100, Number(process.env.RATE_LIMIT_MAX || 600));
   return rateLimit({
     windowMs,
     max,
+    skip: (req) => req.path.startsWith("/api/health"),
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: "Too many requests, please try again shortly." },

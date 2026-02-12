@@ -18,7 +18,19 @@ const corsOrigin = process.env.CORS_ORIGIN
   ? process.env.CORS_ORIGIN.split(",").map((origin) => origin.trim())
   : true;
 
-app.set("trust proxy", true);
+const trustProxyRaw = process.env.TRUST_PROXY;
+if (typeof trustProxyRaw === "string" && trustProxyRaw.trim() !== "") {
+  const normalized = trustProxyRaw.trim().toLowerCase();
+  if (normalized === "false") {
+    app.set("trust proxy", false);
+  } else if (normalized === "true") {
+    // Typical production setup: one reverse proxy hop (nginx/load balancer).
+    app.set("trust proxy", 1);
+  } else {
+    const asNumber = Number(trustProxyRaw);
+    app.set("trust proxy", Number.isFinite(asNumber) ? asNumber : trustProxyRaw);
+  }
+}
 app.use(cors({ origin: corsOrigin }));
 app.use(express.json({ limit: "1mb" }));
 app.use(buildRateLimiter());

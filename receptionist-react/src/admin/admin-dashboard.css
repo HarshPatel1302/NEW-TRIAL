@@ -1,9 +1,13 @@
 .admin-page {
+  height: 100%;
   min-height: 100dvh;
   background: linear-gradient(180deg, #081428, #101d31);
   color: #f3f7ff;
   padding: 20px;
   font-family: "Space Mono", monospace;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
 }
 
 .admin-header {
