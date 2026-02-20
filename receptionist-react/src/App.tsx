@@ -23,6 +23,7 @@ import { LiveClientOptions } from "./types";
 import { RECEPTIONIST_PERSONA } from "./receptionist/config";
 import { TOOLS } from "./receptionist/tools";
 import { DatabaseManager } from "./receptionist/database";
+import { syncWalkInDetailsToExternalApis } from "./receptionist/external-visitor-sync";
 import { GestureController, GestureState } from "./components/Avatar3D/gesture-controller";
 import { ExpressionCue } from "./components/Avatar3D/facial-types";
 import AdminDashboard from "./admin/AdminDashboard";
@@ -58,6 +59,23 @@ const GESTURE_COOLDOWN_MS: Record<GestureState, number> = {
   bow: 3000,
 };
 
+function hasMeaningfulValue(value: unknown) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  return !["n/a", "na", "none", "unknown", "-", "not available", "not sure"].includes(normalized);
+}
+
+function toPhoneDigits(value: unknown) {
+  return String(value ?? "").replace(/\D/g, "");
+}
+
+function isValidVisitorPhone(value: unknown) {
+  const digits = toPhoneDigits(value);
+  return digits.length >= 10;
+}
+
 function ReceptionistApp() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const avatarRef = useRef<Avatar3DRef>(null);
@@ -68,6 +86,7 @@ function ReceptionistApp() {
   const sessionIdRef = useRef<string | null>(null);
   const lastLoggedAssistantTextRef = useRef<string>("");
   const assistantPauseDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hasSentAutoGreetingRef = useRef(false);
 
   const { client, setConfig, setModel, connected, lipSyncRef, assistantAudioPlaying } = useLiveAPIContext();
 
@@ -257,12 +276,16 @@ function ReceptionistApp() {
     if (connected) {
       setExpressionCue("welcome_warm");
       enqueueGesture("waving", { duration: 6.0, priority: 3, force: true });
-      client.send([{ text: "The user is here. Greet them immediately." }]);
+      if (!hasSentAutoGreetingRef.current) {
+        hasSentAutoGreetingRef.current = true;
+        client.send([{ text: "The user is here. Greet them immediately." }]);
+      }
 
       cueTimer = setTimeout(() => {
         setExpressionCue("listening_attentive");
       }, 1800);
     } else {
+      hasSentAutoGreetingRef.current = false;
       gestureQueueRef.current = [];
       gestureBusyUntilRef.current = 0;
       if (gestureProcessTimerRef.current) {
@@ -470,24 +493,97 @@ function ReceptionistApp() {
             };
           }
           else if (name === "save_visitor_info") {
-            const visitor = await DatabaseManager.saveVisitor({
-              name: args.name,
-              phone: args.phone || conversationState.collectedSlots.phone || "N/A",
-              meetingWith: args.meeting_with || conversationState.collectedSlots.person_to_meet || "N/A",
-              intent: args.intent || conversationState.intent || "unknown",
-              department: args.department,
-              purpose: args.purpose,
-              company: args.company,
-              appointmentTime: args.appointment_time,
-              referenceId: args.reference_id,
-              notes: args.notes
-            }, { sessionId: activeSessionId });
-            result = { status: "success", visitor_id: visitor.id };
-            if (activeSessionId) {
-              void DatabaseManager.updateSession(activeSessionId, {
-                visitorId: visitor.id,
-                intent: args.intent || conversationState.intent || "unknown",
-              });
+            const resolvedIntent = args.intent || conversationState.intent || "unknown";
+            const resolvedName =
+              args.name ||
+              conversationState.collectedSlots.visitor_name ||
+              conversationState.collectedSlots.name ||
+              "Visitor";
+            const resolvedPhone =
+              args.phone ||
+              conversationState.collectedSlots.phone ||
+              conversationState.collectedSlots.visitor_phone ||
+              "N/A";
+            const normalizedPhone = toPhoneDigits(resolvedPhone);
+            const resolvedMeetingWith =
+              args.meeting_with ||
+              conversationState.collectedSlots.person_to_meet ||
+              conversationState.collectedSlots.meeting_with ||
+              conversationState.collectedSlots.whom_to_meet ||
+              "N/A";
+            const resolvedCameFrom =
+              args.came_from ||
+              args.company ||
+              conversationState.collectedSlots.came_from ||
+              conversationState.collectedSlots.origin ||
+              conversationState.collectedSlots.company ||
+              "N/A";
+            const missingFields: string[] = [];
+            if (!hasMeaningfulValue(resolvedName) || String(resolvedName).trim().toLowerCase() === "visitor") {
+              missingFields.push("name");
+            }
+            if (!isValidVisitorPhone(resolvedPhone)) {
+              missingFields.push("phone");
+            }
+            if (!hasMeaningfulValue(resolvedCameFrom)) {
+              missingFields.push("came_from");
+            }
+            if (
+              (resolvedIntent === "meet_person" || resolvedIntent === "appointment") &&
+              !hasMeaningfulValue(resolvedMeetingWith)
+            ) {
+              missingFields.push("meeting_with");
+            }
+
+            if (missingFields.length > 0) {
+              result = {
+                status: "need_more_info",
+                missing_fields: missingFields,
+                message:
+                  "Collect all required visitor details before saving. Ask one missing field at a time.",
+              };
+            } else {
+              const visitor = await DatabaseManager.saveVisitor({
+                name: resolvedName,
+                phone: normalizedPhone,
+                meetingWith: resolvedMeetingWith,
+                intent: resolvedIntent,
+                department: args.department,
+                purpose: args.purpose,
+                company: resolvedCameFrom,
+                appointmentTime: args.appointment_time,
+                referenceId: args.reference_id,
+                notes: args.notes
+              }, { sessionId: activeSessionId });
+
+              result = { status: "success", visitor_id: visitor.id };
+              if (activeSessionId) {
+                void DatabaseManager.updateSession(activeSessionId, {
+                  visitorId: visitor.id,
+                  intent: resolvedIntent,
+                });
+              }
+
+              // External API sync is best-effort and must not block speech/tool response.
+              void (async () => {
+                const externalSync = await syncWalkInDetailsToExternalApis({
+                  name: resolvedName,
+                  phone: normalizedPhone,
+                  cameFrom: resolvedCameFrom,
+                  meetingWith: resolvedMeetingWith,
+                  localVisitorId: visitor.id,
+                  intent: resolvedIntent,
+                  sessionId: activeSessionId,
+                });
+
+                if (activeSessionId && externalSync.attempted && !externalSync.allSuccessful) {
+                  await DatabaseManager.logSessionEvent(activeSessionId, {
+                    role: "system",
+                    eventType: "external_walkin_sync_partial_failure",
+                    content: JSON.stringify(externalSync.results),
+                  });
+                }
+              })();
             }
           }
           else if (name === "check_returning_visitor") {

@@ -65,6 +65,9 @@ export default function SidePanel() {
   }, [client, log]);
 
   const handleSubmit = () => {
+    if (!connected || !textInput.trim()) {
+      return;
+    }
     client.send([{ text: textInput }]);
 
     setTextInput("");

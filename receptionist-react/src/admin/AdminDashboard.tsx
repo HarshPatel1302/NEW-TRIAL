@@ -401,6 +401,7 @@ export default function AdminDashboard() {
                   <th>Name</th>
                   <th>Phone</th>
                   <th>Meeting With</th>
+                  <th>Came From</th>
                   <th>Intent</th>
                   <th>Department</th>
                   <th>Updated</th>
@@ -412,6 +413,7 @@ export default function AdminDashboard() {
                     <td>{visitor.name}</td>
                     <td>{visitor.phone}</td>
                     <td>{visitor.meetingWith}</td>
+                    <td>{visitor.company || "-"}</td>
                     <td>{visitor.intent}</td>
                     <td>{visitor.department}</td>
                     <td>{fmtDate(visitor.timestamp)}</td>

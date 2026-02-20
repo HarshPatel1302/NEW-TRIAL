@@ -39,15 +39,16 @@ export const TOOLS: Tool[] = [
                         name: { type: "STRING", description: "Visitor's full name" },
                         phone: { type: "STRING", description: "Visitor's phone number" },
                         meeting_with: { type: "STRING", description: "Name of the person they want to meet" },
+                        came_from: { type: "STRING", description: "Where the visitor came from (area/company/source)" },
                         intent: { type: "STRING", description: "The classified intent" },
                         department: { type: "STRING", description: "Sales or Administration" },
                         purpose: { type: "STRING", description: "Purpose of visit" },
-                        company: { type: "STRING", description: "Company name (optional)" },
+                        company: { type: "STRING", description: "Company/source details if visitor shares where they came from" },
                         appointment_time: { type: "STRING", description: "Appointment time (optional)" },
                         reference_id: { type: "STRING", description: "Reference/booking/tracking number (optional)" },
                         notes: { type: "STRING", description: "Additional notes (optional)" }
                     },
-                    required: ["name", "intent", "department"]
+                    required: ["name", "phone", "came_from", "intent", "department"]
                 } as any
             },
             {

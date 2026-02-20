@@ -89,6 +89,22 @@ export class GenAILiveClient extends EventEmitter<LiveClientEventTypes> {
 
   protected config: LiveConnectConfig | null = null;
 
+  private markDisconnected() {
+    this._session = null;
+    this._status = "disconnected";
+  }
+
+  private canSend() {
+    return this._status === "connected" && !!this._session;
+  }
+
+  private handleSendError(error: unknown, operation: string) {
+    const message = error instanceof Error ? error.message : String(error);
+    this.log(`client.${operation}.error`, message);
+    this.markDisconnected();
+    console.warn(`[GenAILiveClient] ${operation} failed`, message);
+  }
+
   public getConfig() {
     return { ...this.config };
   }
@@ -139,8 +155,6 @@ export class GenAILiveClient extends EventEmitter<LiveClientEventTypes> {
       this._status = "disconnected";
       return false;
     }
-
-    this._status = "connected";
     return true;
   }
 
@@ -148,25 +162,32 @@ export class GenAILiveClient extends EventEmitter<LiveClientEventTypes> {
     if (!this.session) {
       return false;
     }
-    this.session?.close();
-    this._session = null;
-    this._status = "disconnected";
+    try {
+      this.session.close();
+    } catch (error) {
+      this.handleSendError(error, "close");
+    } finally {
+      this.markDisconnected();
+    }
 
     this.log("client.close", `Disconnected`);
     return true;
   }
 
   protected onopen() {
+    this._status = "connected";
     this.log("client.open", "Connected");
     this.emit("open");
   }
 
   protected onerror(e: ErrorEvent) {
+    this.markDisconnected();
     this.log("server.error", e.message);
     this.emit("error", e);
   }
 
   protected onclose(e: CloseEvent) {
+    this.markDisconnected();
     this.log(
       `server.close`,
       `disconnected ${e.reason ? `with reason: ${e.reason}` : ``}`
@@ -244,10 +265,20 @@ export class GenAILiveClient extends EventEmitter<LiveClientEventTypes> {
    * send realtimeInput, this is base64 chunks of "audio/pcm" and/or "image/jpg"
    */
   sendRealtimeInput(chunks: Array<{ mimeType: string; data: string }>) {
+    if (!this.canSend()) {
+      this.log("client.realtimeInput.skipped", "Session not connected");
+      return;
+    }
+
     let hasAudio = false;
     let hasVideo = false;
     for (const ch of chunks) {
-      this.session?.sendRealtimeInput({ media: ch });
+      try {
+        this.session?.sendRealtimeInput({ media: ch });
+      } catch (error) {
+        this.handleSendError(error, "realtimeInput");
+        return;
+      }
       if (ch.mimeType.includes("audio")) {
         hasAudio = true;
       }
@@ -277,9 +308,18 @@ export class GenAILiveClient extends EventEmitter<LiveClientEventTypes> {
       toolResponse.functionResponses &&
       toolResponse.functionResponses.length
     ) {
-      this.session?.sendToolResponse({
-        functionResponses: toolResponse.functionResponses,
-      });
+      if (!this.canSend()) {
+        this.log("client.toolResponse.skipped", "Session not connected");
+        return;
+      }
+      try {
+        this.session?.sendToolResponse({
+          functionResponses: toolResponse.functionResponses,
+        });
+      } catch (error) {
+        this.handleSendError(error, "toolResponse");
+        return;
+      }
       this.log(`client.toolResponse`, toolResponse);
     }
   }
@@ -288,7 +328,16 @@ export class GenAILiveClient extends EventEmitter<LiveClientEventTypes> {
    * send normal content parts such as { text }
    */
   send(parts: Part | Part[], turnComplete: boolean = true) {
-    this.session?.sendClientContent({ turns: parts, turnComplete });
+    if (!this.canSend()) {
+      this.log("client.send.skipped", "Session not connected");
+      return;
+    }
+    try {
+      this.session?.sendClientContent({ turns: parts, turnComplete });
+    } catch (error) {
+      this.handleSendError(error, "send");
+      return;
+    }
     this.log(`client.send`, {
       turns: Array.isArray(parts) ? parts : [parts],
       turnComplete,
