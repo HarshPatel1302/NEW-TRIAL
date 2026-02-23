@@ -1,0 +1,5 @@
+# Runtime storage (generated visitor photos)
+/storage/
+
+# Local backups
+/backups/
