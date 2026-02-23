@@ -584,6 +584,7 @@ export default function AdminDashboard() {
                   <th>Purpose Sub-Category</th>
                   <th>Recipient Company</th>
                   <th>Approval</th>
+                  <th>Approval Source</th>
                   <th>Reference ID</th>
                   <th>Where To Go</th>
                   <th>Member IDs</th>
@@ -601,7 +602,10 @@ export default function AdminDashboard() {
                   const purposeCategoryId = parsedNotes.meta.purpose_category_id || "-";
                   const purposeSubCategoryId = parsedNotes.meta.purpose_sub_category_id || "-";
                   const recipientCompany = parsedNotes.meta.recipient_company || "-";
-                  const approvalDecision = formatDecision(parsedNotes.meta.approval_decision);
+                  const approvalDecision = formatDecision(
+                    parsedNotes.meta.approval_decision || parsedNotes.meta.approval_status
+                  );
+                  const approvalSource = parsedNotes.meta.approval_source || "-";
                   const whereToGo = parsedNotes.meta.where_to_go || "-";
                   const memberIds = parsedNotes.meta.member_ids || "-";
                   const memberObjects = parseMemberObjects(parsedNotes.meta.member_objects_uri);
@@ -625,6 +629,7 @@ export default function AdminDashboard() {
                       <td>{purposeSubCategoryId}</td>
                       <td>{recipientCompany}</td>
                       <td>{approvalDecision}</td>
+                      <td>{approvalSource}</td>
                       <td>{visitor.referenceId || "-"}</td>
                       <td>{whereToGo}</td>
                       <td>{memberIds}</td>

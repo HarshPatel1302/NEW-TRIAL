@@ -203,6 +203,7 @@ function ReceptionistApp() {
   const hasSavedVisitorRef = useRef(false);
   const hasPersistedSecuritySnapshotRef = useRef(false);
   const captureInFlightRef = useRef(false);
+  const lastCaptureErrorRef = useRef<string>("");
 
   const { client, setConfig, setModel, connected, lipSyncRef, assistantAudioPlaying } = useLiveAPIContext();
 
@@ -360,34 +361,77 @@ function ReceptionistApp() {
     setVideoStream(null);
   }, []);
 
+  const describeCameraAccessError = useCallback((error: unknown) => {
+    const err = error as { name?: string; message?: string };
+    const rawName = String(err?.name || "").trim().toLowerCase();
+    if (rawName === "notallowederror" || rawName === "securityerror") {
+      return "Camera access was denied. Please allow camera permission in browser settings and try again.";
+    }
+    if (rawName === "notfounderror" || rawName === "devicesnotfounderror") {
+      return "No camera device was found on this system.";
+    }
+    if (rawName === "notreadableerror" || rawName === "trackstarterror") {
+      return "Camera is busy in another app. Please close other camera apps and try again.";
+    }
+    if (rawName === "overconstrainederror") {
+      return "Camera constraints were not supported on this device. Retrying with fallback constraints.";
+    }
+    const message = String(err?.message || "").trim();
+    if (message) {
+      return `Camera error: ${message}`;
+    }
+    return "Unable to access camera right now. Please try again.";
+  }, []);
+
   const openTemporaryCameraStream = useCallback(async () => {
     if (!navigator.mediaDevices?.getUserMedia) {
+      lastCaptureErrorRef.current = "Camera API is not supported in this browser.";
       return null;
     }
-    const getUserMediaPromise = navigator.mediaDevices.getUserMedia({
-      video: {
-        facingMode: "user",
+    const cameraRequests: MediaStreamConstraints[] = [
+      {
+        video: {
+          facingMode: "user",
+        },
+        audio: false,
       },
-      audio: false,
-    });
-    const stream = (await Promise.race([
-      getUserMediaPromise,
-      new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("Camera permission timed out.")), 8000)
-      ),
-    ])) as MediaStream;
-    const video = videoRef.current;
-    if (video) {
-      video.srcObject = stream;
+      {
+        video: true,
+        audio: false,
+      },
+    ];
+
+    let lastError: unknown = null;
+    for (const constraints of cameraRequests) {
       try {
-        await video.play();
-      } catch {
-        // Some browsers require user interaction before play(); capture loop retries until ready.
+        const getUserMediaPromise = navigator.mediaDevices.getUserMedia(constraints);
+        const stream = (await Promise.race([
+          getUserMediaPromise,
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error("Camera permission timed out.")), 8000)
+          ),
+        ])) as MediaStream;
+
+        const video = videoRef.current;
+        if (video) {
+          video.srcObject = stream;
+          try {
+            await video.play();
+          } catch {
+            // Some browsers require user interaction before play(); capture loop retries until ready.
+          }
+        }
+        setVideoStream(stream);
+        lastCaptureErrorRef.current = "";
+        return stream;
+      } catch (error) {
+        lastError = error;
       }
     }
-    setVideoStream(stream);
-    return stream;
-  }, []);
+
+    lastCaptureErrorRef.current = describeCameraAccessError(lastError);
+    return null;
+  }, [describeCameraAccessError]);
 
   const captureCheckInPhotoAfterCountdown = useCallback(async (source: string, countdownMs = 5000) => {
     if (captureInFlightRef.current) {
@@ -396,8 +440,17 @@ function ReceptionistApp() {
 
     captureInFlightRef.current = true;
     try {
+      lastCaptureErrorRef.current = "";
+      const activeSessionId = sessionIdRef.current;
       const stream = await openTemporaryCameraStream();
       if (!stream) {
+        if (activeSessionId) {
+          await DatabaseManager.logSessionEvent(activeSessionId, {
+            role: "system",
+            eventType: "camera_capture_failed",
+            content: lastCaptureErrorRef.current || "Camera stream was unavailable.",
+          });
+        }
         return false;
       }
       if (countdownMs > 0) {
@@ -405,13 +458,21 @@ function ReceptionistApp() {
       }
       const jpegDataUrl = await captureVisitorPhotoJpeg();
       if (!jpegDataUrl) {
+        lastCaptureErrorRef.current =
+          "Camera opened but no video frame was available for capture.";
+        if (activeSessionId) {
+          await DatabaseManager.logSessionEvent(activeSessionId, {
+            role: "system",
+            eventType: "camera_capture_failed",
+            content: lastCaptureErrorRef.current,
+          });
+        }
         return false;
       }
 
       visitorCheckInPhotoRef.current = jpegDataUrl;
       sessionPhotoRef.current = jpegDataUrl;
 
-      const activeSessionId = sessionIdRef.current;
       if (activeSessionId) {
         await DatabaseManager.logSessionEvent(activeSessionId, {
           role: "system",
@@ -421,11 +482,22 @@ function ReceptionistApp() {
       }
 
       return true;
+    } catch (error) {
+      lastCaptureErrorRef.current = describeCameraAccessError(error);
+      const activeSessionId = sessionIdRef.current;
+      if (activeSessionId) {
+        await DatabaseManager.logSessionEvent(activeSessionId, {
+          role: "system",
+          eventType: "camera_capture_failed",
+          content: lastCaptureErrorRef.current,
+        });
+      }
+      return false;
     } finally {
       captureInFlightRef.current = false;
       stopCameraPreview();
     }
-  }, [captureVisitorPhotoJpeg, openTemporaryCameraStream, stopCameraPreview]);
+  }, [captureVisitorPhotoJpeg, describeCameraAccessError, openTemporaryCameraStream, stopCameraPreview]);
 
   const waitForCaptureSettled = useCallback(async (timeoutMs = 2500) => {
     const startedAt = Date.now();
@@ -921,6 +993,23 @@ function ReceptionistApp() {
               args.where_to_go ||
               conversationState.collectedSlots.where_to_go ||
               "";
+            const resolvedApprovalDecision = String(
+              args.approval_decision ||
+              conversationState.collectedSlots.approval_decision ||
+              ""
+            )
+              .trim()
+              .toLowerCase();
+            const resolvedApprovalStatus = String(
+              args.approval_status ||
+              conversationState.collectedSlots.approval_status ||
+              ""
+            )
+              .trim()
+              .toLowerCase();
+            const resolvedApprovalSource = String(
+              conversationState.collectedSlots.approval_source || ""
+            ).trim();
             let resolvedMemberIdsCsv =
               String(
                 conversationState.collectedSlots.member_ids ||
@@ -1004,6 +1093,15 @@ function ReceptionistApp() {
                 resolvedMemberObjectsEncoded
                   ? `member_objects_uri:${resolvedMemberObjectsEncoded}`
                   : "",
+                resolvedApprovalDecision
+                  ? `approval_decision:${resolvedApprovalDecision}`
+                  : "",
+                resolvedApprovalStatus
+                  ? `approval_status:${resolvedApprovalStatus}`
+                  : "",
+                resolvedApprovalSource
+                  ? `approval_source:${resolvedApprovalSource}`
+                  : "",
               ]
                 .filter(Boolean)
                 .join(" | ");
@@ -1072,6 +1170,8 @@ function ReceptionistApp() {
                   ? resolvedMemberIdsCsv.split(",").map((id: string) => Number(id)).filter((id: number) => Number.isFinite(id))
                   : [],
                 matched_members: resolvedMemberObjects,
+                approval_decision: resolvedApprovalDecision || null,
+                approval_status: resolvedApprovalStatus || null,
               };
               if (activeSessionId) {
                 void DatabaseManager.updateSession(activeSessionId, {
@@ -1120,6 +1220,21 @@ function ReceptionistApp() {
           }
           else if (name === "request_approval") {
             await new Promise((resolve) => setTimeout(resolve, 350));
+            setConversationState((prev) => ({
+              ...prev,
+              collectedSlots: {
+                ...prev.collectedSlots,
+                approval_status: "approved",
+                approval_source: "request_approval",
+              },
+            }));
+            if (activeSessionId) {
+              await DatabaseManager.logSessionEvent(activeSessionId, {
+                role: "system",
+                eventType: "approval_request_approved",
+                content: `Approval granted for ${args.visitor_name || "visitor"}.`,
+              });
+            }
             result = {
               status: "approved",
               message: `Approval granted for ${args.visitor_name}`
@@ -1214,6 +1329,16 @@ function ReceptionistApp() {
                 });
               }
 
+              setConversationState((prev) => ({
+                ...prev,
+                collectedSlots: {
+                  ...prev.collectedSlots,
+                  approval_decision: approval.decision,
+                  approval_status: approval.status,
+                  approval_source: "request_delivery_approval",
+                },
+              }));
+
               result = {
                 status: approval.status,
                 decision: approval.decision,
@@ -1234,6 +1359,21 @@ function ReceptionistApp() {
           }
           else if (name === "notify_staff") {
             await new Promise((resolve) => setTimeout(resolve, 500));
+            setConversationState((prev) => ({
+              ...prev,
+              collectedSlots: {
+                ...prev.collectedSlots,
+                approval_status: "approved",
+                approval_source: "notify_staff",
+              },
+            }));
+            if (activeSessionId) {
+              await DatabaseManager.logSessionEvent(activeSessionId, {
+                role: "system",
+                eventType: "staff_notified_approval_received",
+                content: `Approval granted by ${args.staff_name || "staff"}.`,
+              });
+            }
             result = { status: "approved", message: "Approval granted by " + args.staff_name };
           }
           else if (name === "log_delivery") {
@@ -1321,7 +1461,9 @@ function ReceptionistApp() {
             } else {
               result = {
                 status: "error",
-                message: "Camera not available. Ensure video permission is enabled and try again.",
+                message:
+                  lastCaptureErrorRef.current ||
+                  "Camera not available. Ensure video permission is enabled and try again.",
               };
             }
           }
