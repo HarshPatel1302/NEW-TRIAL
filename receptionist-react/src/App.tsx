@@ -25,6 +25,11 @@ import { TOOLS } from "./receptionist/tools";
 import { DatabaseManager } from "./receptionist/database";
 import { syncWalkInDetailsToExternalApis } from "./receptionist/external-visitor-sync";
 import { requestDeliveryApproval } from "./receptionist/delivery-approval";
+import {
+  decodeMembersFromNotes,
+  encodeMembersForNotes,
+  resolveMembersForDestination,
+} from "./receptionist/member-directory";
 import purposeCatalog from "./receptionist/purpose.json";
 import { GestureController, GestureState } from "./components/Avatar3D/gesture-controller";
 import { ExpressionCue } from "./components/Avatar3D/facial-types";
@@ -760,6 +765,30 @@ function ReceptionistApp() {
             const matchedPurpose = shouldResolvePurposeCategory
               ? findPurposeCategoryMatch(slotValue)
               : null;
+            const shouldResolveMemberDestination = [
+              "where_to_go",
+              "person_to_meet",
+              "meeting_with",
+              "whom_to_meet",
+              "recipient",
+              "recipient_name",
+              "recipient_company",
+            ].includes(slotName);
+            const memberLookupQueryContext =
+              conversationState.collectedSlots.where_to_go ||
+              conversationState.collectedSlots.came_from ||
+              conversationState.collectedSlots.company ||
+              "";
+            const memberLookup = shouldResolveMemberDestination && hasMeaningfulValue(slotValue)
+              ? await resolveMembersForDestination(slotValue, {
+                  secondaryQuery: memberLookupQueryContext,
+                })
+              : null;
+            const matchedMemberIds = memberLookup?.memberIds || [];
+            const matchedMembers = memberLookup?.matchedMembers || [];
+            const encodedMatchedMembers = matchedMembers.length > 0
+              ? encodeMembersForNotes(matchedMembers)
+              : "";
 
             setConversationState(prev => ({
               ...prev,
@@ -780,11 +809,34 @@ function ReceptionistApp() {
                         : {}),
                     }
                   : {}),
+                ...(memberLookup && memberLookup.ok && matchedMemberIds.length > 0
+                  ? {
+                      member_ids: matchedMemberIds.join(","),
+                      member_lookup_query: memberLookup.query,
+                      member_match_count: String(matchedMemberIds.length),
+                      member_objects_uri: encodedMatchedMembers,
+                    }
+                  : {}),
               }
             }));
 
             if (matchedPurpose) {
               console.log("ok", matchedPurpose.category.category_id);
+            }
+
+            if (activeSessionId && memberLookup?.configured) {
+              await DatabaseManager.logSessionEvent(activeSessionId, {
+                role: "system",
+                eventType: memberLookup.ok && matchedMemberIds.length > 0
+                  ? "member_lookup_matched"
+                  : "member_lookup_no_match",
+                content: JSON.stringify({
+                  query: memberLookup.query,
+                  member_ids: matchedMemberIds,
+                  member_count: matchedMemberIds.length,
+                  message: memberLookup.message || "",
+                }),
+              });
             }
 
             result = {
@@ -803,6 +855,17 @@ function ReceptionistApp() {
                       : {}),
                     ok: {
                       purpose_category_id: matchedPurpose.category.category_id,
+                    },
+                  }
+                : {}),
+              ...(memberLookup
+                ? {
+                    member_lookup: {
+                      configured: memberLookup.configured,
+                      ok: memberLookup.ok,
+                      query: memberLookup.query,
+                      member_ids: matchedMemberIds,
+                      member_count: matchedMemberIds.length,
                     },
                   }
                 : {}),
@@ -848,6 +911,72 @@ function ReceptionistApp() {
             );
             const resolvedPurposeSubCategoryName =
               conversationState.collectedSlots.purpose_sub_category_name || "";
+            const resolvedWhereToGo =
+              args.where_to_go ||
+              conversationState.collectedSlots.where_to_go ||
+              "";
+            let resolvedMemberIdsCsv =
+              String(
+                conversationState.collectedSlots.member_ids ||
+                ""
+              ).trim();
+            let resolvedMemberLookupQuery =
+              String(
+                conversationState.collectedSlots.member_lookup_query ||
+                ""
+              ).trim();
+            let resolvedMemberObjectsEncoded =
+              String(
+                conversationState.collectedSlots.member_objects_uri ||
+                ""
+              ).trim();
+            let resolvedMemberObjects = resolvedMemberObjectsEncoded
+              ? decodeMembersFromNotes(resolvedMemberObjectsEncoded)
+              : [];
+
+            if (!resolvedMemberIdsCsv && (hasMeaningfulValue(resolvedMeetingWith) || hasMeaningfulValue(resolvedWhereToGo))) {
+              const memberLookup = await resolveMembersForDestination(
+                [resolvedWhereToGo, resolvedMeetingWith]
+                  .filter((value) => hasMeaningfulValue(value))
+                  .join(" "),
+                {
+                  secondaryQuery: resolvedCameFrom,
+                }
+              );
+
+              if (memberLookup.configured && activeSessionId) {
+                await DatabaseManager.logSessionEvent(activeSessionId, {
+                  role: "system",
+                  eventType: memberLookup.ok && memberLookup.memberIds.length > 0
+                    ? "member_lookup_matched_pre_save"
+                    : "member_lookup_no_match_pre_save",
+                  content: JSON.stringify({
+                    query: memberLookup.query,
+                    member_ids: memberLookup.memberIds,
+                    member_count: memberLookup.memberIds.length,
+                    message: memberLookup.message || "",
+                  }),
+                });
+              }
+
+              if (memberLookup.ok && memberLookup.memberIds.length > 0) {
+                resolvedMemberIdsCsv = memberLookup.memberIds.join(",");
+                resolvedMemberLookupQuery = memberLookup.query;
+                resolvedMemberObjects = memberLookup.matchedMembers;
+                resolvedMemberObjectsEncoded = encodeMembersForNotes(memberLookup.matchedMembers);
+
+                setConversationState((prev) => ({
+                  ...prev,
+                  collectedSlots: {
+                    ...prev.collectedSlots,
+                    member_ids: resolvedMemberIdsCsv,
+                    member_lookup_query: resolvedMemberLookupQuery,
+                    member_match_count: String(memberLookup.memberIds.length),
+                    member_objects_uri: resolvedMemberObjectsEncoded,
+                  },
+                }));
+              }
+            }
             const notesWithPurposeCategory =
               [
                 String(args.notes || "").trim(),
@@ -856,6 +985,18 @@ function ReceptionistApp() {
                   : "",
                 Number.isFinite(resolvedPurposeSubCategoryId) && resolvedPurposeSubCategoryId > 0
                   ? `purpose_sub_category_id:${resolvedPurposeSubCategoryId}`
+                  : "",
+                hasMeaningfulValue(resolvedWhereToGo)
+                  ? `where_to_go:${String(resolvedWhereToGo).trim()}`
+                  : "",
+                resolvedMemberIdsCsv
+                  ? `member_ids:${resolvedMemberIdsCsv}`
+                  : "",
+                resolvedMemberLookupQuery
+                  ? `member_lookup_query:${resolvedMemberLookupQuery}`
+                  : "",
+                resolvedMemberObjectsEncoded
+                  ? `member_objects_uri:${resolvedMemberObjectsEncoded}`
                   : "",
               ]
                 .filter(Boolean)
@@ -866,6 +1007,9 @@ function ReceptionistApp() {
             }
             if (!isValidVisitorPhone(resolvedPhone)) {
               missingFields.push("phone");
+            }
+            if (!hasMeaningfulValue(resolvedWhereToGo)) {
+              missingFields.push("where_to_go");
             }
             if (!hasMeaningfulValue(resolvedMeetingWith)) {
               missingFields.push("meeting_with");
@@ -879,7 +1023,7 @@ function ReceptionistApp() {
                 status: "need_more_info",
                 missing_fields: missingFields,
                 message:
-                  "Collect name, phone, meeting_with, and came_from before saving. Ask one missing field at a time.",
+                  "Collect name, phone, where_to_go, meeting_with, and came_from before saving. Ask one missing field at a time.",
               };
             } else if (!visitorCheckInPhotoRef.current) {
               result = {
@@ -918,6 +1062,10 @@ function ReceptionistApp() {
                     ? resolvedPurposeSubCategoryId
                     : null,
                 purpose_sub_category_name: resolvedPurposeSubCategoryName || null,
+                member_ids: resolvedMemberIdsCsv
+                  ? resolvedMemberIdsCsv.split(",").map((id: string) => Number(id)).filter((id: number) => Number.isFinite(id))
+                  : [],
+                matched_members: resolvedMemberObjects,
               };
               if (activeSessionId) {
                 void DatabaseManager.updateSession(activeSessionId, {

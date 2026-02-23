@@ -20,7 +20,7 @@ export const TOOLS: Tool[] = [
             },
             {
                 name: "collect_slot_value",
-                description: "Record a slot value that was collected from the visitor during the conversation.",
+                description: "Record a slot value that was collected from the visitor during the conversation, such as visitor_name, where_to_go, person_to_meet, came_from, purpose, or department.",
                 parameters: {
                     type: "OBJECT",
                     properties: {
@@ -38,6 +38,7 @@ export const TOOLS: Tool[] = [
                     properties: {
                         name: { type: "STRING", description: "Visitor's full name" },
                         phone: { type: "STRING", description: "Visitor's phone number" },
+                        where_to_go: { type: "STRING", description: "Where in Greenscape the visitor wants to go (tower/office/unit/company)" },
                         meeting_with: { type: "STRING", description: "Name of the person they want to meet" },
                         came_from: { type: "STRING", description: "Where the visitor came from (area/company/source)" },
                         intent: { type: "STRING", description: "The classified intent" },

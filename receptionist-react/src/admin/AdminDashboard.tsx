@@ -173,6 +173,45 @@ function formatDecision(value?: string) {
   return normalized.replace(/_/g, " ");
 }
 
+type ParsedMemberNote = {
+  member_id: number;
+  member_name: string;
+  building_unit: string;
+  unit_flat_number: string;
+};
+
+function parseMemberObjects(value?: string): ParsedMemberNote[] {
+  const encoded = String(value || "").trim();
+  if (!encoded) return [];
+
+  try {
+    const decoded = decodeURIComponent(encoded);
+    const parsed = JSON.parse(decoded);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map((item: any) => ({
+        member_id: Number(item?.member_id),
+        member_name: String(item?.member_name || "").trim(),
+        building_unit: String(item?.building_unit || "").trim(),
+        unit_flat_number: String(item?.unit_flat_number || "").trim(),
+      }))
+      .filter((item) => Number.isFinite(item.member_id) && item.member_id > 0);
+  } catch {
+    return [];
+  }
+}
+
+function formatMemberMatches(members: ParsedMemberNote[]) {
+  if (members.length === 0) return "-";
+  return members
+    .slice(0, 3)
+    .map((member) => {
+      const location = member.building_unit || member.unit_flat_number;
+      return location ? `${member.member_name} (${location})` : member.member_name;
+    })
+    .join(", ");
+}
+
 function normalizePhotoUrl(photo?: string | null) {
   const raw = String(photo || "").trim();
   if (!raw) return null;
@@ -546,6 +585,9 @@ export default function AdminDashboard() {
                   <th>Recipient Company</th>
                   <th>Approval</th>
                   <th>Reference ID</th>
+                  <th>Where To Go</th>
+                  <th>Member IDs</th>
+                  <th>Member Matches</th>
                   <th>Notes</th>
                   <th>Intent</th>
                   <th>Department</th>
@@ -560,6 +602,10 @@ export default function AdminDashboard() {
                   const purposeSubCategoryId = parsedNotes.meta.purpose_sub_category_id || "-";
                   const recipientCompany = parsedNotes.meta.recipient_company || "-";
                   const approvalDecision = formatDecision(parsedNotes.meta.approval_decision);
+                  const whereToGo = parsedNotes.meta.where_to_go || "-";
+                  const memberIds = parsedNotes.meta.member_ids || "-";
+                  const memberObjects = parseMemberObjects(parsedNotes.meta.member_objects_uri);
+                  const memberMatches = formatMemberMatches(memberObjects);
                   const displayNotes = parsedNotes.plainText || "-";
                   return (
                     <tr key={visitor.id}>
@@ -580,6 +626,9 @@ export default function AdminDashboard() {
                       <td>{recipientCompany}</td>
                       <td>{approvalDecision}</td>
                       <td>{visitor.referenceId || "-"}</td>
+                      <td>{whereToGo}</td>
+                      <td>{memberIds}</td>
+                      <td className="notes-cell">{memberMatches}</td>
                       <td className="notes-cell">{displayNotes}</td>
                       <td>{visitor.intent}</td>
                       <td>{visitor.department}</td>
