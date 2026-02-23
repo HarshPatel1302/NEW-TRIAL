@@ -74,6 +74,8 @@ function ControlTray({
   const [muted, setMuted] = useState(false);
   const renderCanvasRef = useRef<HTMLCanvasElement>(null);
   const connectButtonRef = useRef<HTMLButtonElement>(null);
+  const autoStartInFlightRef = useRef(false);
+  const wasConnectedRef = useRef(false);
 
   const { client, connected, connect, disconnect, volume } =
     useLiveAPIContext();
@@ -145,6 +147,32 @@ function ControlTray({
     };
   }, [connected, activeVideoStream, client, videoRef]);
 
+  useEffect(() => {
+    if (!activeVideoStream) {
+      return;
+    }
+
+    const handleTrackEnded = () => {
+      const hasLiveTrack = activeVideoStream
+        .getTracks()
+        .some((track) => track.readyState === "live");
+      if (!hasLiveTrack) {
+        setActiveVideoStream(null);
+        onVideoStreamChange(null);
+      }
+    };
+
+    activeVideoStream
+      .getTracks()
+      .forEach((track) => track.addEventListener("ended", handleTrackEnded));
+
+    return () => {
+      activeVideoStream
+        .getTracks()
+        .forEach((track) => track.removeEventListener("ended", handleTrackEnded));
+    };
+  }, [activeVideoStream, onVideoStreamChange]);
+
   //handler for swapping from one video-stream to the next
   const changeStreams = (next?: UseMediaStreamResult) => async () => {
     if (next) {
@@ -158,6 +186,69 @@ function ControlTray({
 
     videoStreams.filter((msr) => msr !== next).forEach((msr) => msr.stop());
   };
+
+  useEffect(() => {
+    if (connected) {
+      wasConnectedRef.current = true;
+      return;
+    }
+    if (!wasConnectedRef.current) {
+      return;
+    }
+    wasConnectedRef.current = false;
+    autoStartInFlightRef.current = false;
+
+    setActiveVideoStream((current) => {
+      if (current) {
+        current.getTracks().forEach((track) => track.stop());
+      }
+      return null;
+    });
+    onVideoStreamChange(null);
+    webcam.stop();
+    screenCapture.stop();
+  }, [connected, onVideoStreamChange, webcam, screenCapture]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (
+      !connected ||
+      !supportsVideo ||
+      activeVideoStream ||
+      webcam.isStreaming ||
+      autoStartInFlightRef.current
+    ) {
+      return;
+    }
+
+    autoStartInFlightRef.current = true;
+    webcam
+      .start()
+      .then((mediaStream) => {
+        if (cancelled) {
+          mediaStream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+        setActiveVideoStream(mediaStream);
+        onVideoStreamChange(mediaStream);
+      })
+      .catch((error) => {
+        console.warn("Auto webcam start failed:", error);
+      })
+      .finally(() => {
+        autoStartInFlightRef.current = false;
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    connected,
+    supportsVideo,
+    activeVideoStream,
+    webcam,
+    onVideoStreamChange,
+  ]);
 
   return (
     <section className="control-tray">

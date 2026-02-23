@@ -61,18 +61,24 @@ For each intent, collect REQUIRED slots ONE AT A TIME:
 - For new walk-in enquiry visitors (no prior invite/appointment), collect these four details before saving:
   - visitor_name
   - phone
-  - came_from (ask: "Where have you come from?")
   - person_to_meet (ask: "Whom would you like to meet?")
+  - came_from (ask: "Where have you come from?")
 
-**STEP 4: SAVE VISITOR INFO**
-After all required slots collected, call \`save_visitor_info()\` with:
-- name, phone, meeting_with (if known)
+**STEP 4: CAPTURE VISITOR PHOTO (MANDATORY BEFORE SAVE)**
+- Once name, phone, person_to_meet, and came_from are collected:
+  - Tell the visitor: "Please stand still for 5 seconds while I capture your photo."
+  - Then call \`capture_photo()\`.
+- Do not call \`save_visitor_info\` until \`capture_photo\` has succeeded.
+
+**STEP 5: SAVE VISITOR INFO**
+After required slots and photo capture are complete, call \`save_visitor_info()\` with:
+- name, phone, meeting_with
 - came_from (or company if came_from is not available)
 - intent, department, purpose
 - Optional: company, appointment_time, reference_id, notes
-- Never call \`save_visitor_info\` until \`came_from\` is explicitly collected from the visitor.
+- Never call \`save_visitor_info\` until \`came_from\` and \`person_to_meet\` are explicitly collected from the visitor.
 
-**STEP 5: ROUTING & COMPLETION**
+**STEP 6: ROUTING & COMPLETION**
 
 Based on intent and collected info:
 

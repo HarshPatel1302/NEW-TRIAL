@@ -23,6 +23,7 @@ type VisitorRow = {
   name: string;
   phone: string;
   meetingWith: string;
+  photo?: string;
   intent: string;
   department: string;
   purpose: string;
@@ -120,6 +121,92 @@ function fmtDate(value?: string | number | null) {
 
 function pct(value: number) {
   return `${Math.round(value * 10) / 10}%`;
+}
+
+function normalizePhotoUrl(photo?: string | null) {
+  const raw = String(photo || "").trim();
+  if (!raw) return null;
+  if (raw === "jj" || raw.toLowerCase() === "null" || raw.toLowerCase() === "undefined") {
+    return null;
+  }
+  if (raw.startsWith("data:image/")) {
+    const commaIndex = raw.indexOf(",");
+    if (commaIndex <= 0) return null;
+    const header = raw.slice(0, commaIndex).toLowerCase();
+    const body = raw.slice(commaIndex + 1);
+    if (body.length < 120) return null;
+    if (header.includes("image/jpeg") && !body.startsWith("/9j/")) {
+      return null;
+    }
+    if (header.includes("image/png") && !body.startsWith("iVBOR")) {
+      return null;
+    }
+    return raw;
+  }
+  if (raw.startsWith("http://") || raw.startsWith("https://")) {
+    return raw;
+  }
+  const looksLikeBase64 = /^[A-Za-z0-9+/]+={0,2}$/.test(raw);
+  if (looksLikeBase64 && raw.length > 120) {
+    if (raw.startsWith("/9j/")) {
+      return `data:image/jpeg;base64,${raw}`;
+    }
+    if (raw.startsWith("iVBOR")) {
+      return `data:image/png;base64,${raw}`;
+    }
+    return null;
+  }
+  return null;
+}
+
+function PhotoCell({ url, name }: { url: string; name: string }) {
+  const [broken, setBroken] = useState(false);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  if (broken) {
+    return <>-</>;
+  }
+  return (
+    <>
+      <button
+        type="button"
+        className="visitor-photo-button"
+        onClick={() => setOpen(true)}
+        title="View photo"
+      >
+        <img
+          className="visitor-photo-thumb"
+          src={url}
+          alt={`${name} snapshot`}
+          loading="lazy"
+          onError={() => setBroken(true)}
+        />
+      </button>
+      {open ? (
+        <div className="photo-preview-backdrop" onClick={() => setOpen(false)} role="presentation">
+          <div className="photo-preview-modal" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true">
+            <button type="button" className="photo-preview-close" onClick={() => setOpen(false)}>
+              Close
+            </button>
+            <img className="photo-preview-image" src={url} alt={`${name} full snapshot`} />
+          </div>
+        </div>
+      ) : null}
+    </>
+  );
 }
 
 export default function AdminDashboard() {
@@ -399,6 +486,7 @@ export default function AdminDashboard() {
               <thead>
                 <tr>
                   <th>Name</th>
+                  <th>Photo</th>
                   <th>Phone</th>
                   <th>Meeting With</th>
                   <th>Came From</th>
@@ -408,17 +496,27 @@ export default function AdminDashboard() {
                 </tr>
               </thead>
               <tbody>
-                {visitors.map((visitor) => (
-                  <tr key={visitor.id}>
-                    <td>{visitor.name}</td>
-                    <td>{visitor.phone}</td>
-                    <td>{visitor.meetingWith}</td>
-                    <td>{visitor.company || "-"}</td>
-                    <td>{visitor.intent}</td>
-                    <td>{visitor.department}</td>
-                    <td>{fmtDate(visitor.timestamp)}</td>
-                  </tr>
-                ))}
+                {visitors.map((visitor) => {
+                  const photoUrl = normalizePhotoUrl(visitor.photo);
+                  return (
+                    <tr key={visitor.id}>
+                      <td>{visitor.name}</td>
+                      <td>
+                        {photoUrl ? (
+                          <PhotoCell url={photoUrl} name={visitor.name} />
+                        ) : (
+                          "-"
+                        )}
+                      </td>
+                      <td>{visitor.phone}</td>
+                      <td>{visitor.meetingWith}</td>
+                      <td>{visitor.company || "-"}</td>
+                      <td>{visitor.intent}</td>
+                      <td>{visitor.department}</td>
+                      <td>{fmtDate(visitor.timestamp)}</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

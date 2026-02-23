@@ -147,6 +147,7 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
     }
     client.disconnect();
     try {
+      await audioStreamerRef.current?.resume();
       console.log("Calling client.connect...");
       await client.connect(model, config);
       console.log("client.connect returned");

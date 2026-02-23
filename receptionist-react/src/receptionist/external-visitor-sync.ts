@@ -5,6 +5,7 @@ export type ExternalWalkInDetails = {
   phone: string;
   cameFrom: string;
   meetingWith: string;
+  photo?: string;
   localVisitorId?: string;
   intent?: string;
   sessionId?: string | null;
@@ -53,6 +54,11 @@ const GATE_LOGIN_API_URL = process.env.REACT_APP_GATE_LOGIN_API_URL || "";
 const GATE_LOGIN_USERNAME = process.env.REACT_APP_GATE_LOGIN_USERNAME || "";
 const GATE_LOGIN_PASSWORD = process.env.REACT_APP_GATE_LOGIN_PASSWORD || "";
 const COMPANY_ID = process.env.REACT_APP_WALKIN_COMPANY_ID || "8196";
+const RECEPTIONIST_API_BASE_URL = trimSlash(
+  process.env.REACT_APP_RECEPTIONIST_API_URL || "http://localhost:5000/api"
+);
+const RECEPTIONIST_API_KEY = process.env.REACT_APP_RECEPTIONIST_API_KEY || "";
+const KIOSK_ID = process.env.REACT_APP_KIOSK_ID || "";
 
 function onlyDigits(input: string) {
   return String(input || "").replace(/\D/g, "");
@@ -62,8 +68,48 @@ function sanitizeText(input: string) {
   return String(input || "").trim();
 }
 
+function toBase64Payload(input: string) {
+  const value = sanitizeText(input);
+  if (!value) return "";
+  if (value.startsWith("data:")) {
+    const commaIndex = value.indexOf(",");
+    return commaIndex >= 0 ? value.slice(commaIndex + 1) : value;
+  }
+  return value;
+}
+
 function trimSlash(url: string) {
   return String(url || "").replace(/\/+$/, "");
+}
+
+function isHttpUrl(value: string) {
+  return /^https?:\/\//i.test(String(value || "").trim());
+}
+
+function isUnauthorizedStatus(status: number) {
+  return status === 401 || status === 403;
+}
+
+function buildPhotoFileNameHint(details: ExternalWalkInDetails) {
+  const name = sanitizeText(details.name)
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 24);
+  const phone = onlyDigits(details.phone).slice(-10);
+  const visitorPart = sanitizeText(details.localVisitorId || "").slice(0, 18);
+  return [name, phone, visitorPart].filter(Boolean).join("-") || "visitor";
+}
+
+function buildReceptionistApiHeaders() {
+  const headers = new Headers({ "Content-Type": "application/json" });
+  if (RECEPTIONIST_API_KEY) {
+    headers.set("x-api-key", RECEPTIONIST_API_KEY);
+  }
+  if (KIOSK_ID) {
+    headers.set("x-kiosk-id", KIOSK_ID);
+  }
+  return headers;
 }
 
 function toMessageText(value: unknown) {
@@ -85,6 +131,95 @@ async function parseEnvelopeSafe(response: Response): Promise<ApiEnvelope> {
     return (await response.json()) as ApiEnvelope;
   } catch {
     return {};
+  }
+}
+
+async function uploadVisitorPhotoToCloud(
+  photo: string,
+  details: ExternalWalkInDetails,
+  authContext: {
+    authToken?: string;
+    loginUrl?: string;
+    username?: string;
+    password?: string;
+    refreshAuthToken?: () => Promise<string>;
+  } = {},
+  retryIfUnauthorized = true
+): Promise<string> {
+  const normalizedPhoto = sanitizeText(photo);
+  if (!normalizedPhoto || !RECEPTIONIST_API_BASE_URL) {
+    return "";
+  }
+
+  const requestUrl = `${RECEPTIONIST_API_BASE_URL}/media/upload-cover`;
+  const controller = new AbortController();
+  const timeout: ReturnType<typeof setTimeout> = setTimeout(
+    () => controller.abort(),
+    REQUEST_TIMEOUT_MS + 5000
+  );
+
+  try {
+    console.info("[WalkInSync] Visitor photo upload call", {
+      method: "POST",
+      url: requestUrl,
+    });
+
+    const response = await fetch(requestUrl, {
+      method: "POST",
+      headers: buildReceptionistApiHeaders(),
+      body: JSON.stringify({
+        photoDataUrl: normalizedPhoto,
+        fileNameHint: buildPhotoFileNameHint(details),
+        authToken: sanitizeText(authContext.authToken || ""),
+        loginUrl: sanitizeText(authContext.loginUrl || ""),
+        username: sanitizeText(authContext.username || ""),
+        password: String(authContext.password || ""),
+      }),
+      signal: controller.signal,
+    });
+
+    const payload = await parseEnvelopeSafe(response);
+    console.info("[WalkInSync] Visitor photo upload response", {
+      status: response.status,
+      ok: response.ok,
+      message: toMessageText(payload?.message),
+    });
+
+    if (
+      !response.ok &&
+      retryIfUnauthorized &&
+      isUnauthorizedStatus(response.status) &&
+      typeof authContext.refreshAuthToken === "function"
+    ) {
+      const refreshedToken = sanitizeText(await authContext.refreshAuthToken());
+      if (refreshedToken) {
+        return uploadVisitorPhotoToCloud(
+          normalizedPhoto,
+          details,
+          {
+            ...authContext,
+            authToken: refreshedToken,
+          },
+          false
+        );
+      }
+    }
+
+    if (!response.ok) {
+      return "";
+    }
+
+    const s3Link = sanitizeText(
+      ((payload?.data as Record<string, unknown> | undefined)?.s3_link as string) ||
+        ((payload?.data as Record<string, unknown> | undefined)?.s3Link as string) ||
+        ""
+    );
+    return s3Link;
+  } catch (error) {
+    console.warn("[WalkInSync] Visitor photo upload failed", error);
+    return "";
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -211,9 +346,12 @@ class GateVisitorApiClient {
       });
       const payload = await parseEnvelopeSafe(response);
 
-      if (retryIfExpired && isExpiredTokenEnvelope(payload, response.status)) {
+      if (
+        retryIfExpired &&
+        (isExpiredTokenEnvelope(payload, response.status) || isUnauthorizedStatus(response.status))
+      ) {
         console.warn(
-          "[WalkInSync] Token expired (exp claim). Refreshing token and retrying request."
+          "[WalkInSync] Auth expired/unauthorized. Refreshing token and retrying request."
         );
         await this.refreshToken();
         return this.requestWithAuth(url, init, false);
@@ -298,9 +436,33 @@ class GateVisitorApiClient {
     const requestUrl = `${this.baseUrl}/api/visitor/entry`;
     const normalizedCameFrom = sanitizeText(details.cameFrom);
     const normalizedMeetingWith = sanitizeText(details.meetingWith);
+    const normalizedPhoto = sanitizeText(details.photo || "");
+    const photoBase64 = toBase64Payload(normalizedPhoto);
+    let visitorImagePayload = photoBase64 || "jj";
+
+    if (normalizedPhoto) {
+      if (isHttpUrl(normalizedPhoto)) {
+        visitorImagePayload = normalizedPhoto;
+      } else {
+        const uploadedS3Link = await uploadVisitorPhotoToCloud(normalizedPhoto, details, {
+          authToken: this.accessToken || "",
+          loginUrl: this.loginUrl,
+          username: this.username,
+          password: this.password,
+          refreshAuthToken: async () => {
+            await this.refreshToken();
+            return this.accessToken || "";
+          },
+        });
+        if (uploadedS3Link) {
+          visitorImagePayload = uploadedS3Link;
+        }
+      }
+    }
+
     const payload = {
       name: sanitizeText(details.name),
-      visitor_image: "jj",
+      visitor_image: visitorImagePayload,
       mobile_number: onlyDigits(details.phone),
       // External systems vary in field naming; send both supported aliases.
       coming_from: normalizedCameFrom,

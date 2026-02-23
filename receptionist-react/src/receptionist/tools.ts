@@ -32,7 +32,7 @@ export const TOOLS: Tool[] = [
             },
             {
                 name: "save_visitor_info",
-                description: "Save the complete visitor's information to the database after all required slots are collected.",
+                description: "Save the complete visitor's information to the database after all required slots are collected and a visitor photo has been captured.",
                 parameters: {
                     type: "OBJECT",
                     properties: {
@@ -49,6 +49,14 @@ export const TOOLS: Tool[] = [
                         notes: { type: "STRING", description: "Additional notes (optional)" }
                     },
                     required: ["name", "phone", "came_from", "intent", "department"]
+                } as any
+            },
+            {
+                name: "capture_photo",
+                description: "After collecting name, phone, meeting_with, and came_from, ask the visitor to stand still for 5 seconds and then capture a JPG photo.",
+                parameters: {
+                    type: "OBJECT",
+                    properties: {},
                 } as any
             },
             {

@@ -76,6 +76,10 @@ function isValidVisitorPhone(value: unknown) {
   return digits.length >= 10;
 }
 
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function ReceptionistApp() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const avatarRef = useRef<Avatar3DRef>(null);
@@ -87,6 +91,11 @@ function ReceptionistApp() {
   const lastLoggedAssistantTextRef = useRef<string>("");
   const assistantPauseDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasSentAutoGreetingRef = useRef(false);
+  const sessionPhotoRef = useRef<string | null>(null);
+  const visitorCheckInPhotoRef = useRef<string | null>(null);
+  const hasSavedVisitorRef = useRef(false);
+  const hasPersistedSecuritySnapshotRef = useRef(false);
+  const captureInFlightRef = useRef(false);
 
   const { client, setConfig, setModel, connected, lipSyncRef, assistantAudioPlaying } = useLiveAPIContext();
 
@@ -208,6 +217,142 @@ function ReceptionistApp() {
     enqueueGesture(gesture, { duration, priority });
   }, [enqueueGesture]);
 
+  const captureVisitorPhotoJpeg = useCallback(async () => {
+    const attempts = 12;
+    for (let index = 0; index < attempts; index += 1) {
+      const video = videoRef.current;
+      if (video && video.videoWidth > 0 && video.videoHeight > 0) {
+        const maxWidth = 640;
+        const ratio = Math.min(1, maxWidth / video.videoWidth);
+        const targetWidth = Math.max(1, Math.round(video.videoWidth * ratio));
+        const targetHeight = Math.max(1, Math.round(video.videoHeight * ratio));
+        const canvas = document.createElement("canvas");
+        canvas.width = targetWidth;
+        canvas.height = targetHeight;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          return null;
+        }
+        ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
+        return canvas.toDataURL("image/jpeg", 0.82);
+      }
+      await sleep(300);
+    }
+    return null;
+  }, []);
+
+  const stopCameraPreview = useCallback(() => {
+    const video = videoRef.current;
+    const stream = (video?.srcObject as MediaStream | null) || null;
+    if (stream) {
+      stream.getTracks().forEach((track) => track.stop());
+    }
+    if (video) {
+      video.srcObject = null;
+    }
+    setVideoStream(null);
+  }, []);
+
+  const openTemporaryCameraStream = useCallback(async () => {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      return null;
+    }
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: "user",
+      },
+      audio: false,
+    });
+    const video = videoRef.current;
+    if (video) {
+      video.srcObject = stream;
+      try {
+        await video.play();
+      } catch {
+        // Some browsers require user interaction before play(); capture loop retries until ready.
+      }
+    }
+    setVideoStream(stream);
+    return stream;
+  }, []);
+
+  const captureCheckInPhotoAfterCountdown = useCallback(async (source: string, countdownMs = 5000) => {
+    if (captureInFlightRef.current) {
+      return false;
+    }
+
+    captureInFlightRef.current = true;
+    try {
+      const stream = await openTemporaryCameraStream();
+      if (!stream) {
+        return false;
+      }
+      if (countdownMs > 0) {
+        await sleep(countdownMs);
+      }
+      const jpegDataUrl = await captureVisitorPhotoJpeg();
+      if (!jpegDataUrl) {
+        return false;
+      }
+
+      visitorCheckInPhotoRef.current = jpegDataUrl;
+      sessionPhotoRef.current = jpegDataUrl;
+
+      const activeSessionId = sessionIdRef.current;
+      if (activeSessionId) {
+        await DatabaseManager.logSessionEvent(activeSessionId, {
+          role: "system",
+          eventType: "visitor_photo_captured",
+          content: `Captured check-in JPEG snapshot (${source}).`,
+        });
+      }
+
+      return true;
+    } finally {
+      captureInFlightRef.current = false;
+      stopCameraPreview();
+    }
+  }, [captureVisitorPhotoJpeg, openTemporaryCameraStream, stopCameraPreview]);
+
+  const waitForCaptureSettled = useCallback(async (timeoutMs = 2500) => {
+    const startedAt = Date.now();
+    while (captureInFlightRef.current && Date.now() - startedAt < timeoutMs) {
+      await sleep(120);
+    }
+  }, []);
+
+  const persistSecuritySnapshotIfNeeded = useCallback(async (sessionId: string) => {
+    if (
+      !sessionId ||
+      hasSavedVisitorRef.current ||
+      hasPersistedSecuritySnapshotRef.current ||
+      !sessionPhotoRef.current
+    ) {
+      return;
+    }
+
+    const snapshot = await DatabaseManager.saveVisitor(
+      {
+        name: "Unknown Visitor",
+        phone: "",
+        meetingWith: "",
+        intent: "unknown",
+        department: "Security",
+        purpose: "Auto-captured visitor snapshot (interaction not completed)",
+        company: "",
+        notes: "Security snapshot captured at interaction start.",
+        photo: sessionPhotoRef.current,
+      },
+      { sessionId }
+    );
+
+    hasPersistedSecuritySnapshotRef.current = true;
+    await DatabaseManager.updateSession(sessionId, {
+      visitorId: snapshot.id,
+      summary: "Visitor left before completing details. Security photo captured.",
+    });
+  }, []);
+
   // ── Initial Configuration ─────────────────────────────────────────
   useEffect(() => {
     const modelId = "models/gemini-2.5-flash-native-audio-preview-12-2025";
@@ -247,6 +392,11 @@ function ReceptionistApp() {
     let cancelled = false;
 
     if (connected) {
+      hasSavedVisitorRef.current = false;
+      hasPersistedSecuritySnapshotRef.current = false;
+      sessionPhotoRef.current = null;
+      visitorCheckInPhotoRef.current = null;
+      captureInFlightRef.current = false;
       const kioskId = process.env.REACT_APP_KIOSK_ID || "greenscape-lobby-kiosk";
       void DatabaseManager.startSession({ kioskId }).then((sessionId) => {
         if (!cancelled && sessionId) {
@@ -255,20 +405,36 @@ function ReceptionistApp() {
       });
     } else {
       lastLoggedAssistantTextRef.current = "";
+      stopCameraPreview();
       const activeSessionId = sessionIdRef.current;
       sessionIdRef.current = null;
       if (activeSessionId) {
-        void DatabaseManager.endSession(activeSessionId, {
-          status: "disconnected",
-          summary: "Live connection closed before explicit end_interaction.",
-        });
+        void (async () => {
+          await waitForCaptureSettled();
+          const shouldPersistSnapshot =
+            !!sessionPhotoRef.current &&
+            !hasSavedVisitorRef.current &&
+            !hasPersistedSecuritySnapshotRef.current;
+          if (shouldPersistSnapshot) {
+            await persistSecuritySnapshotIfNeeded(activeSessionId);
+          }
+          await DatabaseManager.endSession(activeSessionId, {
+            status: "disconnected",
+            summary: "Live connection closed before explicit end_interaction.",
+          });
+          captureInFlightRef.current = false;
+          hasSavedVisitorRef.current = false;
+          hasPersistedSecuritySnapshotRef.current = false;
+          sessionPhotoRef.current = null;
+          visitorCheckInPhotoRef.current = null;
+        })();
       }
     }
 
     return () => {
       cancelled = true;
     };
-  }, [connected]);
+  }, [connected, persistSecuritySnapshotIfNeeded, stopCameraPreview, waitForCaptureSettled]);
 
   // ── AUTO-GREETING ─────────────────────────────────────────────────
   useEffect(() => {
@@ -525,14 +691,11 @@ function ReceptionistApp() {
             if (!isValidVisitorPhone(resolvedPhone)) {
               missingFields.push("phone");
             }
+            if (!hasMeaningfulValue(resolvedMeetingWith)) {
+              missingFields.push("meeting_with");
+            }
             if (!hasMeaningfulValue(resolvedCameFrom)) {
               missingFields.push("came_from");
-            }
-            if (
-              (resolvedIntent === "meet_person" || resolvedIntent === "appointment") &&
-              !hasMeaningfulValue(resolvedMeetingWith)
-            ) {
-              missingFields.push("meeting_with");
             }
 
             if (missingFields.length > 0) {
@@ -540,9 +703,17 @@ function ReceptionistApp() {
                 status: "need_more_info",
                 missing_fields: missingFields,
                 message:
-                  "Collect all required visitor details before saving. Ask one missing field at a time.",
+                  "Collect name, phone, meeting_with, and came_from before saving. Ask one missing field at a time.",
+              };
+            } else if (!visitorCheckInPhotoRef.current) {
+              result = {
+                status: "need_photo_capture",
+                missing_fields: ["photo"],
+                message:
+                  "Ask the visitor to stand still for 5 seconds, call capture_photo, then save_visitor_info again.",
               };
             } else {
+              const finalVisitorPhoto = visitorCheckInPhotoRef.current || args.photo || undefined;
               const visitor = await DatabaseManager.saveVisitor({
                 name: resolvedName,
                 phone: normalizedPhone,
@@ -553,10 +724,16 @@ function ReceptionistApp() {
                 company: resolvedCameFrom,
                 appointmentTime: args.appointment_time,
                 referenceId: args.reference_id,
-                notes: args.notes
+                notes: args.notes,
+                photo: finalVisitorPhoto,
               }, { sessionId: activeSessionId });
 
-              result = { status: "success", visitor_id: visitor.id };
+              hasSavedVisitorRef.current = true;
+              result = {
+                status: "success",
+                visitor_id: visitor.id,
+                photo_format: "image/jpeg",
+              };
               if (activeSessionId) {
                 void DatabaseManager.updateSession(activeSessionId, {
                   visitorId: visitor.id,
@@ -574,6 +751,7 @@ function ReceptionistApp() {
                   localVisitorId: visitor.id,
                   intent: resolvedIntent,
                   sessionId: activeSessionId,
+                  photo: finalVisitorPhoto,
                 });
 
                 if (activeSessionId && externalSync.attempted && !externalSync.allSuccessful) {
@@ -632,8 +810,10 @@ function ReceptionistApp() {
               purpose: "Delivery",
               company: args.company,
               referenceId: args.tracking_number,
-              notes: args.description
+              notes: args.description,
+              photo: sessionPhotoRef.current || undefined,
             }, { sessionId: activeSessionId });
+            hasSavedVisitorRef.current = true;
             result = {
               status: "success",
               message: `Delivery logged for ${args.department}`
@@ -641,6 +821,7 @@ function ReceptionistApp() {
           }
           else if (name === "end_interaction") {
             if (activeSessionId) {
+              await persistSecuritySnapshotIfNeeded(activeSessionId);
               await DatabaseManager.endSession(activeSessionId, {
                 status: "completed",
                 summary: "Interaction completed through end_interaction tool.",
@@ -651,24 +832,29 @@ function ReceptionistApp() {
             fireGesture('bow', undefined, 3);
             console.log("Interaction ended. Resetting in 5 seconds...");
             setTimeout(() => {
+              stopCameraPreview();
               client.disconnect();
               setVideoStream(null);
               setConversationState({ collectedSlots: {} });
+              visitorCheckInPhotoRef.current = null;
               setLastAudioText("");
               setExpressionCue("neutral_professional");
             }, 6000);
             result = { status: "success", message: "Resetting kiosk." };
           }
           else if (name === "capture_photo") {
-            if (videoRef.current) {
-              const canvas = document.createElement("canvas");
-              canvas.width = videoRef.current.videoWidth;
-              canvas.height = videoRef.current.videoHeight;
-              canvas.getContext("2d")?.drawImage(videoRef.current, 0, 0);
-              canvas.toDataURL("image/jpeg");
-              result = { status: "success", message: "Photo captured successfully." };
+            const captured = await captureCheckInPhotoAfterCountdown("tool_call_after_5s_still_pose", 5000);
+            if (captured) {
+              result = {
+                status: "success",
+                message: "Photo captured successfully in JPG format after 5 seconds.",
+                format: "image/jpeg",
+              };
             } else {
-              result = { status: "error", message: "Camera not available." };
+              result = {
+                status: "error",
+                message: "Camera not available. Ensure video permission is enabled and try again.",
+              };
             }
           }
         } catch (e: any) {
@@ -689,7 +875,7 @@ function ReceptionistApp() {
     return () => {
       client.off("toolcall", onToolCall);
     };
-  }, [client, conversationState, fireGesture]);
+  }, [client, conversationState, fireGesture, captureCheckInPhotoAfterCountdown, persistSecuritySnapshotIfNeeded, stopCameraPreview]);
 
   return (
     <div className="app-container">
@@ -710,7 +896,7 @@ function ReceptionistApp() {
 
           <ControlTray
             videoRef={videoRef}
-            supportsVideo={true}
+            supportsVideo={false}
             onVideoStreamChange={setVideoStream}
             enableEditingSettings={false}
           >

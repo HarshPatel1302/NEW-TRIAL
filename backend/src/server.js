@@ -3,6 +3,7 @@ const cors = require("cors");
 const dotenv = require("dotenv");
 const XLSX = require("xlsx");
 const { query } = require("./db");
+const { uploadVisitorPhotoAndGetS3Link } = require("./cover-upload");
 const {
   buildAuthMiddleware,
   buildRateLimiter,
@@ -106,6 +107,58 @@ app.get("/api/health", async (_req, res) => {
 
 // Everything below /api (except health above) requires API key if BACKEND_API_KEY is configured.
 app.use("/api", buildAuthMiddleware());
+
+app.post("/api/media/upload-cover", async (req, res) => {
+  const {
+    photoDataUrl = "",
+    fileNameHint = "",
+    authToken = "",
+    loginUrl = "",
+    username = "",
+    password = "",
+  } = req.body || {};
+  const normalizedPhoto = String(photoDataUrl || "").trim();
+
+  if (!normalizedPhoto) {
+    return res.status(400).json({
+      success: false,
+      status: 400,
+      message: "photoDataUrl is required",
+    });
+  }
+
+  try {
+    const uploaded = await uploadVisitorPhotoAndGetS3Link(normalizedPhoto, {
+      fileNameHint: String(fileNameHint || "visitor"),
+      authToken: String(authToken || "").trim(),
+      loginUrl: String(loginUrl || "").trim(),
+      username: String(username || "").trim(),
+      password: String(password || ""),
+    });
+
+    return res.json({
+      success: true,
+      status: 200,
+      message: "Cover image uploaded successfully",
+      data: {
+        s3_link: uploaded.s3Link,
+        local_file: uploaded.localPath,
+        file_name: uploaded.fileName,
+      },
+    });
+  } catch (error) {
+    const message = error?.message || "Cover image upload failed";
+    const normalizedStatus = /required|invalid|payload|small/i.test(message) ? 400 : 502;
+    return res.status(normalizedStatus).json({
+      success: false,
+      status: normalizedStatus,
+      message,
+      data: {
+        s3_link: "",
+      },
+    });
+  }
+});
 
 app.post("/api/visitors/upsert", async (req, res) => {
   const {
