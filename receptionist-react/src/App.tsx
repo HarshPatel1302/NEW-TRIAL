@@ -24,6 +24,8 @@ import { RECEPTIONIST_PERSONA } from "./receptionist/config";
 import { TOOLS } from "./receptionist/tools";
 import { DatabaseManager } from "./receptionist/database";
 import { syncWalkInDetailsToExternalApis } from "./receptionist/external-visitor-sync";
+import { requestDeliveryApproval } from "./receptionist/delivery-approval";
+import purposeCatalog from "./receptionist/purpose.json";
 import { GestureController, GestureState } from "./components/Avatar3D/gesture-controller";
 import { ExpressionCue } from "./components/Avatar3D/facial-types";
 import AdminDashboard from "./admin/AdminDashboard";
@@ -39,6 +41,23 @@ type QueuedGesture = {
   duration?: number;
   priority: number;
   createdAt: number;
+};
+
+type PurposeCategory = {
+  category_id: number;
+  category_name: string;
+  sub_categories?: Array<{
+    sub_category_id: number | null;
+    sub_category_name: string | null;
+    sub_category_purpose_img?: string | null;
+  }>;
+};
+
+type PurposeCatalog = {
+  success: boolean;
+  data: PurposeCategory[];
+  message: string;
+  status_code: number;
 };
 
 const FALLBACK_GESTURE_DURATIONS: Record<GestureState, number> = {
@@ -59,6 +78,8 @@ const GESTURE_COOLDOWN_MS: Record<GestureState, number> = {
   bow: 3000,
 };
 
+const PURPOSE_CATALOG = purposeCatalog as PurposeCatalog;
+
 function hasMeaningfulValue(value: unknown) {
   const normalized = String(value ?? "").trim().toLowerCase();
   if (!normalized) {
@@ -78,6 +99,87 @@ function isValidVisitorPhone(value: unknown) {
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function normalizePurposeText(input: unknown) {
+  return String(input || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]+/g, " ")
+    .replace(/\s+/g, " ");
+}
+
+function stripTrailingPlural(input: string) {
+  return input.endsWith("s") ? input.slice(0, -1) : input;
+}
+
+function findPurposeCategoryMatch(value: unknown) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+
+  const asNumber = Number(raw);
+  if (Number.isFinite(asNumber)) {
+    const byId = PURPOSE_CATALOG.data.find((category) => category.category_id === asNumber);
+    if (byId) {
+      return {
+        category: byId,
+        subCategory: null,
+      };
+    }
+    for (const category of PURPOSE_CATALOG.data) {
+      const subCategory = (category.sub_categories || []).find(
+        (sub) => sub?.sub_category_id !== null && sub?.sub_category_id === asNumber
+      );
+      if (subCategory) {
+        return {
+          category,
+          subCategory,
+        };
+      }
+    }
+  }
+
+  const normalized = normalizePurposeText(raw);
+  if (!normalized) return null;
+
+  const normalizedSingular = stripTrailingPlural(normalized);
+  const categoryMatch = PURPOSE_CATALOG.data.find((category) => {
+    const categoryNormalized = normalizePurposeText(category.category_name);
+    const categorySingular = stripTrailingPlural(categoryNormalized);
+    return (
+      categoryNormalized === normalized ||
+      categorySingular === normalizedSingular ||
+      categoryNormalized.includes(normalized) ||
+      normalized.includes(categoryNormalized)
+    );
+  });
+  if (categoryMatch) {
+    return {
+      category: categoryMatch,
+      subCategory: null,
+    };
+  }
+
+  for (const category of PURPOSE_CATALOG.data) {
+    for (const subCategory of category.sub_categories || []) {
+      if (!subCategory?.sub_category_name) continue;
+      const subNormalized = normalizePurposeText(subCategory.sub_category_name);
+      const subSingular = stripTrailingPlural(subNormalized);
+      if (
+        subNormalized === normalized ||
+        subSingular === normalizedSingular ||
+        subNormalized.includes(normalized) ||
+        normalized.includes(subNormalized)
+      ) {
+        return {
+          category,
+          subCategory,
+        };
+      }
+    }
+  }
+
+  return null;
 }
 
 function ReceptionistApp() {
@@ -645,17 +747,65 @@ function ReceptionistApp() {
             }
           }
           else if (name === "collect_slot_value") {
+            const slotName = String(args.slot_name || "").trim().toLowerCase();
+            const slotValue = String(args.value || "").trim();
+            const shouldResolvePurposeCategory = [
+              "purpose",
+              "purpose_category",
+              "category",
+              "company",
+              "delivery_company",
+              "delivery_partner",
+            ].includes(slotName);
+            const matchedPurpose = shouldResolvePurposeCategory
+              ? findPurposeCategoryMatch(slotValue)
+              : null;
+
             setConversationState(prev => ({
               ...prev,
               collectedSlots: {
                 ...prev.collectedSlots,
-                [args.slot_name]: args.value
+                [slotName]: slotValue,
+                ...(matchedPurpose
+                  ? {
+                      purpose_category_id: String(matchedPurpose.category.category_id),
+                      purpose_category_name: matchedPurpose.category.category_name,
+                      ...(matchedPurpose.subCategory
+                        ? {
+                            purpose_sub_category_id: String(matchedPurpose.subCategory.sub_category_id),
+                            purpose_sub_category_name: String(
+                              matchedPurpose.subCategory.sub_category_name || ""
+                            ),
+                          }
+                        : {}),
+                    }
+                  : {}),
               }
             }));
+
+            if (matchedPurpose) {
+              console.log("ok", matchedPurpose.category.category_id);
+            }
+
             result = {
               status: "success",
-              slot: args.slot_name,
-              value: args.value
+              slot: slotName,
+              value: slotValue,
+              ...(matchedPurpose
+                ? {
+                    purpose_category_id: matchedPurpose.category.category_id,
+                    purpose_category_name: matchedPurpose.category.category_name,
+                    ...(matchedPurpose.subCategory
+                      ? {
+                          purpose_sub_category_id: matchedPurpose.subCategory.sub_category_id,
+                          purpose_sub_category_name: matchedPurpose.subCategory.sub_category_name,
+                        }
+                      : {}),
+                    ok: {
+                      purpose_category_id: matchedPurpose.category.category_id,
+                    },
+                  }
+                : {}),
             };
           }
           else if (name === "save_visitor_info") {
@@ -684,6 +834,32 @@ function ReceptionistApp() {
               conversationState.collectedSlots.origin ||
               conversationState.collectedSlots.company ||
               "N/A";
+            const resolvedPurpose =
+              args.purpose ||
+              conversationState.collectedSlots.purpose ||
+              "";
+            const resolvedPurposeCategoryId = Number(
+              conversationState.collectedSlots.purpose_category_id || ""
+            );
+            const resolvedPurposeCategoryName =
+              conversationState.collectedSlots.purpose_category_name || "";
+            const resolvedPurposeSubCategoryId = Number(
+              conversationState.collectedSlots.purpose_sub_category_id || ""
+            );
+            const resolvedPurposeSubCategoryName =
+              conversationState.collectedSlots.purpose_sub_category_name || "";
+            const notesWithPurposeCategory =
+              [
+                String(args.notes || "").trim(),
+                Number.isFinite(resolvedPurposeCategoryId) && resolvedPurposeCategoryId > 0
+                  ? `purpose_category_id:${resolvedPurposeCategoryId}`
+                  : "",
+                Number.isFinite(resolvedPurposeSubCategoryId) && resolvedPurposeSubCategoryId > 0
+                  ? `purpose_sub_category_id:${resolvedPurposeSubCategoryId}`
+                  : "",
+              ]
+                .filter(Boolean)
+                .join(" | ");
             const missingFields: string[] = [];
             if (!hasMeaningfulValue(resolvedName) || String(resolvedName).trim().toLowerCase() === "visitor") {
               missingFields.push("name");
@@ -720,11 +896,11 @@ function ReceptionistApp() {
                 meetingWith: resolvedMeetingWith,
                 intent: resolvedIntent,
                 department: args.department,
-                purpose: args.purpose,
+                purpose: resolvedPurpose,
                 company: resolvedCameFrom,
                 appointmentTime: args.appointment_time,
                 referenceId: args.reference_id,
-                notes: args.notes,
+                notes: notesWithPurposeCategory,
                 photo: finalVisitorPhoto,
               }, { sessionId: activeSessionId });
 
@@ -733,6 +909,15 @@ function ReceptionistApp() {
                 status: "success",
                 visitor_id: visitor.id,
                 photo_format: "image/jpeg",
+                purpose_category_id: Number.isFinite(resolvedPurposeCategoryId) && resolvedPurposeCategoryId > 0
+                  ? resolvedPurposeCategoryId
+                  : null,
+                purpose_category_name: resolvedPurposeCategoryName || null,
+                purpose_sub_category_id:
+                  Number.isFinite(resolvedPurposeSubCategoryId) && resolvedPurposeSubCategoryId > 0
+                    ? resolvedPurposeSubCategoryId
+                    : null,
+                purpose_sub_category_name: resolvedPurposeSubCategoryName || null,
               };
               if (activeSessionId) {
                 void DatabaseManager.updateSession(activeSessionId, {
@@ -786,6 +971,103 @@ function ReceptionistApp() {
               message: `Approval granted for ${args.visitor_name}`
             };
           }
+          else if (name === "request_delivery_approval") {
+            const resolvedDeliveryCompany =
+              String(
+                args.delivery_company ||
+                conversationState.collectedSlots.delivery_company ||
+                conversationState.collectedSlots.delivery_partner ||
+                conversationState.collectedSlots.company ||
+                ""
+              ).trim();
+            const resolvedRecipientCompany =
+              String(
+                args.recipient_company ||
+                conversationState.collectedSlots.recipient_company ||
+                conversationState.collectedSlots.target_company ||
+                conversationState.collectedSlots.department ||
+                ""
+              ).trim();
+            const resolvedRecipientName =
+              String(
+                args.recipient_name ||
+                conversationState.collectedSlots.person_to_meet ||
+                conversationState.collectedSlots.recipient ||
+                conversationState.collectedSlots.meeting_with ||
+                ""
+              ).trim();
+            const resolvedTrackingNumber =
+              String(
+                args.tracking_number ||
+                conversationState.collectedSlots.reference_id ||
+                ""
+              ).trim();
+            const resolvedParcelDescription =
+              String(
+                args.parcel_description ||
+                conversationState.collectedSlots.purpose ||
+                "Parcel delivery"
+              ).trim();
+            const resolvedDeliveryPersonName =
+              String(
+                args.delivery_person_name ||
+                conversationState.collectedSlots.visitor_name ||
+                ""
+              ).trim();
+
+            const missingFields: string[] = [];
+            if (!hasMeaningfulValue(resolvedDeliveryCompany)) {
+              missingFields.push("delivery_company");
+            }
+            if (!hasMeaningfulValue(resolvedRecipientCompany)) {
+              missingFields.push("recipient_company");
+            }
+            if (!hasMeaningfulValue(resolvedRecipientName)) {
+              missingFields.push("recipient_name");
+            }
+
+            if (missingFields.length > 0) {
+              result = {
+                status: "need_more_info",
+                missing_fields: missingFields,
+                message:
+                  "Collect delivery company, recipient company, and recipient name before requesting delivery approval.",
+              };
+            } else if (!visitorCheckInPhotoRef.current) {
+              result = {
+                status: "need_photo_capture",
+                missing_fields: ["photo"],
+                message:
+                  "Ask the delivery person to stand still for 5 seconds, call capture_photo, then request_delivery_approval.",
+              };
+            } else {
+              const approval = await requestDeliveryApproval({
+                deliveryCompany: resolvedDeliveryCompany,
+                recipientCompany: resolvedRecipientCompany,
+                recipientName: resolvedRecipientName,
+                trackingNumber: resolvedTrackingNumber,
+                parcelDescription: resolvedParcelDescription,
+                deliveryPersonName: resolvedDeliveryPersonName,
+                photoDataUrl: visitorCheckInPhotoRef.current,
+                sessionId: activeSessionId,
+              });
+
+              if (activeSessionId) {
+                await DatabaseManager.logSessionEvent(activeSessionId, {
+                  role: "system",
+                  eventType: `delivery_approval_${approval.decision}`,
+                  content: approval.message,
+                });
+              }
+
+              result = {
+                status: approval.status,
+                decision: approval.decision,
+                message: approval.message,
+                status_code: approval.statusCode || null,
+              };
+            }
+          }
           else if (name === "check_staff_availability") {
             const isAvailable = Math.random() > 0.3;
             result = {
@@ -801,22 +1083,54 @@ function ReceptionistApp() {
             result = { status: "approved", message: "Approval granted by " + args.staff_name };
           }
           else if (name === "log_delivery") {
+            const resolvedDeliveryCompany =
+              String(
+                args.company ||
+                conversationState.collectedSlots.delivery_company ||
+                conversationState.collectedSlots.delivery_partner ||
+                conversationState.collectedSlots.company ||
+                "Delivery"
+              ).trim();
+            const resolvedRecipientCompany =
+              String(
+                args.recipient_company ||
+                conversationState.collectedSlots.recipient_company ||
+                conversationState.collectedSlots.target_company ||
+                conversationState.collectedSlots.department ||
+                "Greenscape"
+              ).trim();
+            const resolvedRecipient =
+              String(
+                args.recipient ||
+                conversationState.collectedSlots.person_to_meet ||
+                conversationState.collectedSlots.recipient ||
+                "N/A"
+              ).trim();
+            const resolvedDepartment = String(args.department || "Administration").trim() || "Administration";
+            const resolvedDecision = String(args.approval_decision || "").trim().toLowerCase();
+            const deliveryNotes = [String(args.description || "").trim()];
+            if (resolvedRecipientCompany) {
+              deliveryNotes.push(`recipient_company:${resolvedRecipientCompany}`);
+            }
+            if (resolvedDecision) {
+              deliveryNotes.push(`approval_decision:${resolvedDecision}`);
+            }
             await DatabaseManager.saveVisitor({
-              name: `Delivery from ${args.company}`,
+              name: `Delivery from ${resolvedDeliveryCompany}`,
               phone: "N/A",
-              meetingWith: args.recipient || "N/A",
+              meetingWith: resolvedRecipient,
               intent: "delivery",
-              department: args.department,
+              department: resolvedDepartment,
               purpose: "Delivery",
-              company: args.company,
+              company: resolvedDeliveryCompany,
               referenceId: args.tracking_number,
-              notes: args.description,
+              notes: deliveryNotes.filter(Boolean).join(" | "),
               photo: sessionPhotoRef.current || undefined,
             }, { sessionId: activeSessionId });
             hasSavedVisitorRef.current = true;
             result = {
               status: "success",
-              message: `Delivery logged for ${args.department}`
+              message: `Delivery logged for ${resolvedDepartment}`
             };
           }
           else if (name === "end_interaction") {

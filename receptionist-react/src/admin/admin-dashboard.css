@@ -252,6 +252,12 @@ tbody tr.active {
   background: #081629;
 }
 
+.notes-cell {
+  max-width: 260px;
+  white-space: normal;
+  line-height: 1.35;
+}
+
 @media (max-width: 900px) {
   .admin-kpis {
     grid-template-columns: repeat(2, minmax(140px, 1fr));

@@ -26,8 +26,11 @@ type VisitorRow = {
   photo?: string;
   intent: string;
   department: string;
-  purpose: string;
-  company: string;
+  purpose?: string;
+  company?: string;
+  referenceId?: string;
+  notes?: string;
+  appointmentTime?: string;
   updatedAt?: string;
   timestamp?: number;
 };
@@ -121,6 +124,53 @@ function fmtDate(value?: string | number | null) {
 
 function pct(value: number) {
   return `${Math.round(value * 10) / 10}%`;
+}
+
+type ParsedVisitorNotes = {
+  plainText: string;
+  meta: Record<string, string>;
+};
+
+function parseVisitorNotes(notes?: string | null): ParsedVisitorNotes {
+  const raw = String(notes || "").trim();
+  if (!raw) {
+    return {
+      plainText: "",
+      meta: {},
+    };
+  }
+
+  const parts = raw
+    .split("|")
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  const meta: Record<string, string> = {};
+  const plainParts: string[] = [];
+
+  parts.forEach((part) => {
+    const separator = part.indexOf(":");
+    if (separator > 0 && separator < part.length - 1) {
+      const key = part.slice(0, separator).trim().toLowerCase();
+      const value = part.slice(separator + 1).trim();
+      if (key && value) {
+        meta[key] = value;
+        return;
+      }
+    }
+    plainParts.push(part);
+  });
+
+  return {
+    plainText: plainParts.join(" | "),
+    meta,
+  };
+}
+
+function formatDecision(value?: string) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) return "-";
+  return normalized.replace(/_/g, " ");
 }
 
 function normalizePhotoUrl(photo?: string | null) {
@@ -490,6 +540,13 @@ export default function AdminDashboard() {
                   <th>Phone</th>
                   <th>Meeting With</th>
                   <th>Came From</th>
+                  <th>Purpose</th>
+                  <th>Purpose Category</th>
+                  <th>Purpose Sub-Category</th>
+                  <th>Recipient Company</th>
+                  <th>Approval</th>
+                  <th>Reference ID</th>
+                  <th>Notes</th>
                   <th>Intent</th>
                   <th>Department</th>
                   <th>Updated</th>
@@ -498,6 +555,12 @@ export default function AdminDashboard() {
               <tbody>
                 {visitors.map((visitor) => {
                   const photoUrl = normalizePhotoUrl(visitor.photo);
+                  const parsedNotes = parseVisitorNotes(visitor.notes);
+                  const purposeCategoryId = parsedNotes.meta.purpose_category_id || "-";
+                  const purposeSubCategoryId = parsedNotes.meta.purpose_sub_category_id || "-";
+                  const recipientCompany = parsedNotes.meta.recipient_company || "-";
+                  const approvalDecision = formatDecision(parsedNotes.meta.approval_decision);
+                  const displayNotes = parsedNotes.plainText || "-";
                   return (
                     <tr key={visitor.id}>
                       <td>{visitor.name}</td>
@@ -511,6 +574,13 @@ export default function AdminDashboard() {
                       <td>{visitor.phone}</td>
                       <td>{visitor.meetingWith}</td>
                       <td>{visitor.company || "-"}</td>
+                      <td>{visitor.purpose || "-"}</td>
+                      <td>{purposeCategoryId}</td>
+                      <td>{purposeSubCategoryId}</td>
+                      <td>{recipientCompany}</td>
+                      <td>{approvalDecision}</td>
+                      <td>{visitor.referenceId || "-"}</td>
+                      <td className="notes-cell">{displayNotes}</td>
                       <td>{visitor.intent}</td>
                       <td>{visitor.department}</td>
                       <td>{fmtDate(visitor.timestamp)}</td>

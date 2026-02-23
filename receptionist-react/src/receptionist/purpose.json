@@ -1,0 +1,159 @@
+{
+  "success": true,
+  "data": [
+    {
+      "category_id": 3,
+      "category_name": "DELIVERY",
+      "category_img": "https://fsadvt-bucket.s3.ap-south-1.amazonaws.com/delivery_boy_4bba1833cc.png?updated_at=2023-09-08T12:42:09.875Z",
+      "sub_categories": [
+        {
+          "sub_category_id": 1,
+          "sub_category_name": "Flipkart",
+          "sub_category_purpose_img": "https://webautomation.io/static/images/domain_images/flipkart_icon_SKVWQhA.png"
+        },
+        {
+          "sub_category_id": 2,
+          "sub_category_name": "Amazon",
+          "sub_category_purpose_img": "https://assets.upstox.com/content/assets/images/cms/202451/Amazon%20logo.png"
+        },
+        {
+          "sub_category_id": 3,
+          "sub_category_name": "Myntra",
+          "sub_category_purpose_img": "https://media.licdn.com/dms/image/v2/D5612AQF3SxUgP2EulA/article-cover_image-shrink_720_1280/article-cover_image-shrink_720_1280/0/1712121176528?e=2147483647&v=beta&t=jhoT0RXTAB3_RN6vlD-eERHUZtDXIKXghSQotZPzd2Q"
+        },
+        {
+          "sub_category_id": 4,
+          "sub_category_name": "Swiggy",
+          "sub_category_purpose_img": "https://content.jdmagicbox.com/comp/mumbai/z1/022pxx22.xx22.150803125128.z7z1/catalogue/swiggy-com-branch-office-andheri-east-mumbai-online-websites-for-food-delivery-aijodveedn.jpg"
+        },
+        {
+          "sub_category_id": 5,
+          "sub_category_name": "Zomato",
+          "sub_category_purpose_img": "https://content.jdmagicbox.com/v2/comp/mumbai/u1/022pxx22.xx22.170704134830.t7u1/catalogue/zomato-com-mumbai-corporate-companies-1fm7z2kn6v.jpg"
+        },
+        {
+          "sub_category_id": 6,
+          "sub_category_name": "Dunzo",
+          "sub_category_purpose_img": "https://mir-s3-cdn-cf.behance.net/project_modules/1400/c79cc971959541.5bd75efd34d39.jpg"
+        },
+        {
+          "sub_category_id": 7,
+          "sub_category_name": "BigBasket",
+          "sub_category_purpose_img": "https://cdn-images-1.medium.com/max/1200/1*kqElrV8y9kt64NDnfwqf6g.png"
+        },
+        {
+          "sub_category_id": 8,
+          "sub_category_name": "Delhivery",
+          "sub_category_purpose_img": "https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcS2CQIMiyn44Rj9rbUflyH69dj0MaObVOeQPw&s"
+        },
+        {
+          "sub_category_id": 9,
+          "sub_category_name": "Blue Dart",
+          "sub_category_purpose_img": "https://media.licdn.com/dms/image/v2/C4D0BAQGjOwzlSzSwCQ/company-logo_200_200/company-logo_200_200/0/1631329681950?e=2147483647&v=beta&t=oyASYPcfvBB1Iv3p0q3qS0TPae-pkg3oba7DBKXUr5U"
+        },
+        {
+          "sub_category_id": 10,
+          "sub_category_name": "FedEx",
+          "sub_category_purpose_img": "https://content.jdmagicbox.com/v2/comp/bangalore/s1/080pxx80.xx80.231101201423.u9s1/catalogue/fedex-ship-site-bwc-international-kammanahalli-bangalore-international-courier-services-uguu63fg2i.jpg"
+        },
+        {
+          "sub_category_id": 16,
+          "sub_category_name": "Others",
+          "sub_category_purpose_img": "https://fsadvt-bucket.s3.ap-south-1.amazonaws.com/others_8bc82bff95.png"
+        },
+        {
+          "sub_category_id": 17,
+          "sub_category_name": "Dominos",
+          "sub_category_purpose_img": "https://upload.wikimedia.org/wikipedia/commons/thumb/3/3e/Domino%27s_pizza_logo.svg/512px-Domino%27s_pizza_logo.svg.png"
+        },
+        {
+          "sub_category_id": 18,
+          "sub_category_name": "Blinkit",
+          "sub_category_purpose_img": "https://yt3.googleusercontent.com/oe7za_pjcm3tYZKtTAs6aWuZCOzB6aHWnZOGYwrYjuZe72SMkVs3qoCElDQl-ob8CaKNimXI=s900-c-k-c0x00ffffff-no-rj"
+        }
+      ]
+    },
+    {
+      "category_id": 5,
+      "category_name": "VENDOR",
+      "category_img": "https://fsadvt-bucket.s3.ap-south-1.amazonaws.com/vendor_f5d3fe1fa3.png",
+      "sub_categories": [
+        {
+          "sub_category_id": 11,
+          "sub_category_name": "Electricians",
+          "sub_category_purpose_img": "https://fsadvt-bucket.s3.ap-south-1.amazonaws.com/thumbnail_electrician_27bbbf74c6.png"
+        },
+        {
+          "sub_category_id": 12,
+          "sub_category_name": "Plumbers",
+          "sub_category_purpose_img": "https://fsadvt-bucket.s3.ap-south-1.amazonaws.com/plumber_735a10b74b.png"
+        },
+        {
+          "sub_category_id": 13,
+          "sub_category_name": "Carpenters",
+          "sub_category_purpose_img": "https://fsadvt-bucket.s3.ap-south-1.amazonaws.com/carpenter_e6f7d319bd.png"
+        },
+        {
+          "sub_category_id": 14,
+          "sub_category_name": "Others",
+          "sub_category_purpose_img": "https://fsadvt-bucket.s3.ap-south-1.amazonaws.com/others_8bc82bff95.png"
+        },
+        {
+          "sub_category_id": 15,
+          "sub_category_name": "Painters",
+          "sub_category_purpose_img": "https://fsadvt-bucket.s3.ap-south-1.amazonaws.com/thumbnail_painter_f53d7a0b97.png"
+        }
+      ]
+    },
+    {
+      "category_id": 2,
+      "category_name": "CABS",
+      "category_img": "https://fsadvt-bucket.s3.ap-south-1.amazonaws.com/cab_8ed111c563.png?updated_at=2023-09-08T12:42:09.898Z",
+      "sub_categories": [
+        {
+          "sub_category_id": null,
+          "sub_category_name": null,
+          "sub_category_purpose_img": null
+        }
+      ]
+    },
+    {
+      "category_id": 6,
+      "category_name": "MEMBER STAFF",
+      "category_img": "https://fstech-cubeoneapp.s3.ap-south-1.amazonaws.com/meeting-covers/1744803342-unnamed.png",
+      "sub_categories": [
+        {
+          "sub_category_id": null,
+          "sub_category_name": null,
+          "sub_category_purpose_img": null
+        }
+      ]
+    },
+    {
+      "category_id": 4,
+      "category_name": "STAFF",
+      "category_img": "https://fsadvt-bucket.s3.ap-south-1.amazonaws.com/staff_ae83c36d56.png?updatedAt=2023-09-08T12%3A42%3A09.891Z",
+      "sub_categories": [
+        {
+          "sub_category_id": null,
+          "sub_category_name": null,
+          "sub_category_purpose_img": null
+        }
+      ]
+    },
+    {
+      "category_id": 1,
+      "category_name": "GUEST",
+      "category_img": "https://fsadvt-bucket.s3.ap-south-1.amazonaws.com/guest_dbd7ea2cb9.png?updated_at=2023-09-08T12:42:09.850Z",
+      "sub_categories": [
+        {
+          "sub_category_id": null,
+          "sub_category_name": null,
+          "sub_category_purpose_img": null
+        }
+      ]
+    }
+  ],
+  "message": "Purpose categories fetched successfully",
+  "status_code": 200
+}

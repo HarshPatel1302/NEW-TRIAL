@@ -53,7 +53,7 @@ export const TOOLS: Tool[] = [
             },
             {
                 name: "capture_photo",
-                description: "After collecting name, phone, meeting_with, and came_from, ask the visitor to stand still for 5 seconds and then capture a JPG photo.",
+                description: "After collecting required details for the active flow, ask the visitor to stand still for 5 seconds and then capture a JPG photo.",
                 parameters: {
                     type: "OBJECT",
                     properties: {},
@@ -85,7 +85,7 @@ export const TOOLS: Tool[] = [
             },
             {
                 name: "request_approval",
-                description: "Request approval from Admin/Security for visitor entry. Waits for yes/no response.",
+                description: "Request approval from Admin/Security for non-delivery visitor entry. Waits for yes/no response.",
                 parameters: {
                     type: "OBJECT",
                     properties: {
@@ -94,6 +94,22 @@ export const TOOLS: Tool[] = [
                         department: { type: "STRING", description: "Requested department" }
                     },
                     required: ["visitor_name", "purpose", "department"]
+                } as any
+            },
+            {
+                name: "request_delivery_approval",
+                description: "Request delivery approval decision for a delivery partner after photo capture. Decision is one of: allow, decline, lobby_drop.",
+                parameters: {
+                    type: "OBJECT",
+                    properties: {
+                        delivery_company: { type: "STRING", description: "Delivery platform/company (e.g., Flipkart, Amazon)" },
+                        recipient_company: { type: "STRING", description: "Which company/office in the building the parcel is for" },
+                        recipient_name: { type: "STRING", description: "Person in the company who should receive the parcel" },
+                        tracking_number: { type: "STRING", description: "Tracking/parcel number (optional)" },
+                        parcel_description: { type: "STRING", description: "Short description of parcel (optional)" },
+                        delivery_person_name: { type: "STRING", description: "Delivery person's name (optional)" }
+                    },
+                    required: ["delivery_company", "recipient_company", "recipient_name"]
                 } as any
             },
             {
@@ -129,7 +145,9 @@ export const TOOLS: Tool[] = [
                         department: { type: "STRING", description: "Sales or Administration" },
                         tracking_number: { type: "STRING", description: "Tracking or parcel number (optional)" },
                         description: { type: "STRING", description: "What is being delivered (optional)" },
-                        recipient: { type: "STRING", description: "Name of the recipient (optional)" }
+                        recipient_company: { type: "STRING", description: "Which company/office in the building the parcel is for (optional)" },
+                        recipient: { type: "STRING", description: "Name of the recipient (optional)" },
+                        approval_decision: { type: "STRING", description: "allow, decline, or lobby_drop (optional)" }
                     },
                     required: ["company", "department"]
                 } as any
