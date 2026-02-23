@@ -364,12 +364,18 @@ function ReceptionistApp() {
     if (!navigator.mediaDevices?.getUserMedia) {
       return null;
     }
-    const stream = await navigator.mediaDevices.getUserMedia({
+    const getUserMediaPromise = navigator.mediaDevices.getUserMedia({
       video: {
         facingMode: "user",
       },
       audio: false,
     });
+    const stream = (await Promise.race([
+      getUserMediaPromise,
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("Camera permission timed out.")), 8000)
+      ),
+    ])) as MediaStream;
     const video = videoRef.current;
     if (video) {
       video.srcObject = stream;
@@ -1113,7 +1119,7 @@ function ReceptionistApp() {
             };
           }
           else if (name === "request_approval") {
-            await new Promise((resolve) => setTimeout(resolve, 3000));
+            await new Promise((resolve) => setTimeout(resolve, 350));
             result = {
               status: "approved",
               message: `Approval granted for ${args.visitor_name}`
@@ -1227,7 +1233,7 @@ function ReceptionistApp() {
             };
           }
           else if (name === "notify_staff") {
-            await new Promise((resolve) => setTimeout(resolve, 6000));
+            await new Promise((resolve) => setTimeout(resolve, 500));
             result = { status: "approved", message: "Approval granted by " + args.staff_name };
           }
           else if (name === "log_delivery") {
@@ -1330,6 +1336,15 @@ function ReceptionistApp() {
         });
       }
 
+      if (responses.length === 0) {
+        return;
+      }
+
+      if (!connected || client.status !== "connected") {
+        console.warn("Skipping tool response because live socket is not connected.");
+        return;
+      }
+
       client.sendToolResponse({ functionResponses: responses });
     };
 
@@ -1337,7 +1352,7 @@ function ReceptionistApp() {
     return () => {
       client.off("toolcall", onToolCall);
     };
-  }, [client, conversationState, fireGesture, captureCheckInPhotoAfterCountdown, persistSecuritySnapshotIfNeeded, stopCameraPreview]);
+  }, [client, connected, conversationState, fireGesture, captureCheckInPhotoAfterCountdown, persistSecuritySnapshotIfNeeded, stopCameraPreview]);
 
   return (
     <div className="app-container">
