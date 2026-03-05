@@ -94,6 +94,9 @@ function ControlTray({
 
   useEffect(() => {
     const onData = (base64: string) => {
+      if (!connected || client.status !== "connected") {
+        return;
+      }
       client.sendRealtimeInput([
         {
           mimeType: "audio/pcm;rate=16000",
@@ -133,6 +136,9 @@ function ControlTray({
         ctx.drawImage(videoRef.current, 0, 0, canvas.width, canvas.height);
         const base64 = canvas.toDataURL("image/jpeg", 1.0);
         const data = base64.slice(base64.indexOf(",") + 1, Infinity);
+        if (client.status !== "connected") {
+          return;
+        }
         client.sendRealtimeInput([{ mimeType: "image/jpeg", data }]);
       }
       if (connected) {

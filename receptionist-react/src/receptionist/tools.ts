@@ -5,14 +5,14 @@ export const TOOLS: Tool[] = [
         functionDeclarations: [
             {
                 name: "classify_intent",
-                description: "Classify the visitor's intent based on what they said. Use this when you first understand what the visitor needs.",
+                description: "Classify the visitor into one of these intents: meet_person, delivery, or info.",
                 parameters: {
                     type: "OBJECT",
                     properties: {
                         visitor_statement: { type: "STRING", description: "What the visitor said about their purpose" },
                         detected_intent: {
                             type: "STRING",
-                            description: "The intent you detected: first_time_visit, returning_visit, sales_inquiry, admin_support, delivery, appointment, site_walkthrough, meet_person, approval_required, or interview"
+                            description: "Detected intent: meet_person, delivery, or info"
                         }
                     },
                     required: ["visitor_statement", "detected_intent"]
@@ -20,14 +20,47 @@ export const TOOLS: Tool[] = [
             },
             {
                 name: "collect_slot_value",
-                description: "Record a slot value that was collected from the visitor during the conversation, such as visitor_name, where_to_go, person_to_meet, came_from, purpose, or department.",
+                description: "Record one collected field. For visitor flow use visitor_name, phone, meeting_with. For delivery flow use visitor_name, delivery_company, recipient_company, recipient_name.",
                 parameters: {
                     type: "OBJECT",
                     properties: {
-                        slot_name: { type: "STRING", description: "The name of the slot (e.g., visitor_name, purpose, department)" },
+                        slot_name: {
+                            type: "STRING",
+                            description:
+                                "Use one of: visitor_name, phone, meeting_with, delivery_company, recipient_company, recipient_name."
+                        },
                         value: { type: "STRING", description: "The value provided by the visitor" }
                     },
                     required: ["slot_name", "value"]
+                } as any
+            },
+            {
+                name: "request_delivery_approval",
+                description:
+                    "Request delivery decision after collecting delivery details and capturing photo. Current test response should guide to keep parcel at lobby.",
+                parameters: {
+                    type: "OBJECT",
+                    properties: {
+                        delivery_company: {
+                            type: "STRING",
+                            description: "Delivery partner company (e.g., Amazon, Blue Dart)."
+                        },
+                        recipient_company: {
+                            type: "STRING",
+                            description: "Company the parcel is intended for."
+                        },
+                        recipient_name: {
+                            type: "STRING",
+                            description: "Person in the recipient company who should receive the parcel."
+                        },
+                        delivery_person_name: {
+                            type: "STRING",
+                            description: "Name of the delivery person."
+                        },
+                        tracking_number: { type: "STRING", description: "Optional parcel tracking id." },
+                        parcel_description: { type: "STRING", description: "Optional parcel details." }
+                    },
+                    required: ["delivery_company", "recipient_company", "recipient_name", "delivery_person_name"]
                 } as any
             },
             {
@@ -38,18 +71,22 @@ export const TOOLS: Tool[] = [
                     properties: {
                         name: { type: "STRING", description: "Visitor's full name" },
                         phone: { type: "STRING", description: "Visitor's phone number" },
-                        where_to_go: { type: "STRING", description: "Where in Greenscape the visitor wants to go (tower/office/unit/company)" },
-                        meeting_with: { type: "STRING", description: "Name of the person they want to meet" },
-                        came_from: { type: "STRING", description: "Where the visitor came from (area/company/source)" },
-                        intent: { type: "STRING", description: "The classified intent" },
-                        department: { type: "STRING", description: "Sales or Administration" },
-                        purpose: { type: "STRING", description: "Purpose of visit" },
-                        company: { type: "STRING", description: "Company/source details if visitor shares where they came from" },
+                        meeting_with: { type: "STRING", description: "Name of the person they want to meet, or a flat/unit number like 1904" },
+                        came_from: { type: "STRING", description: "Optional source/company if available" },
+                        intent: { type: "STRING", description: "Optional classified intent" },
+                        department: { type: "STRING", description: "Optional internal field" },
+                        purpose: { type: "STRING", description: "Optional purpose field" },
+                        company: { type: "STRING", description: "Optional company/source if shared" },
+                        delivery_company: { type: "STRING", description: "Optional delivery partner company" },
+                        recipient_company: { type: "STRING", description: "Optional recipient company for delivery" },
+                        recipient_name: { type: "STRING", description: "Optional recipient person for delivery" },
                         appointment_time: { type: "STRING", description: "Appointment time (optional)" },
                         reference_id: { type: "STRING", description: "Reference/booking/tracking number (optional)" },
-                        notes: { type: "STRING", description: "Additional notes (optional)" }
+                        notes: { type: "STRING", description: "Additional notes (optional)" },
+                        approval_decision: { type: "STRING", description: "Optional approval decision" },
+                        approval_status: { type: "STRING", description: "Optional approval status" }
                     },
-                    required: ["name", "phone", "came_from", "intent", "department"]
+                    required: ["name", "phone", "meeting_with"]
                 } as any
             },
             {
@@ -58,99 +95,6 @@ export const TOOLS: Tool[] = [
                 parameters: {
                     type: "OBJECT",
                     properties: {},
-                } as any
-            },
-            {
-                name: "check_returning_visitor",
-                description: "Check if a visitor has visited before by their phone number.",
-                parameters: {
-                    type: "OBJECT",
-                    properties: {
-                        phone: { type: "STRING", description: "Visitor's phone number" }
-                    },
-                    required: ["phone"]
-                } as any
-            },
-            {
-                name: "route_to_department",
-                description: "Route the visitor to the specified department (Sales or Administration).",
-                parameters: {
-                    type: "OBJECT",
-                    properties: {
-                        department: { type: "STRING", description: "Sales or Administrator" },
-                        intent: { type: "STRING", description: "The visitor's intent" },
-                        visitor_name: { type: "STRING", description: "Visitor's name" }
-                    },
-                    required: ["department", "intent", "visitor_name"]
-                } as any
-            },
-            {
-                name: "request_approval",
-                description: "Request approval from Admin/Security for non-delivery visitor entry. Waits for yes/no response.",
-                parameters: {
-                    type: "OBJECT",
-                    properties: {
-                        visitor_name: { type: "STRING", description: "Visitor's name" },
-                        purpose: { type: "STRING", description: "Purpose of visit" },
-                        department: { type: "STRING", description: "Requested department" }
-                    },
-                    required: ["visitor_name", "purpose", "department"]
-                } as any
-            },
-            {
-                name: "request_delivery_approval",
-                description: "Request delivery approval decision for a delivery partner after photo capture. Decision is one of: allow, decline, lobby_drop.",
-                parameters: {
-                    type: "OBJECT",
-                    properties: {
-                        delivery_company: { type: "STRING", description: "Delivery platform/company (e.g., Flipkart, Amazon)" },
-                        recipient_company: { type: "STRING", description: "Which company/office in the building the parcel is for" },
-                        recipient_name: { type: "STRING", description: "Person in the company who should receive the parcel" },
-                        tracking_number: { type: "STRING", description: "Tracking/parcel number (optional)" },
-                        parcel_description: { type: "STRING", description: "Short description of parcel (optional)" },
-                        delivery_person_name: { type: "STRING", description: "Delivery person's name (optional)" }
-                    },
-                    required: ["delivery_company", "recipient_company", "recipient_name"]
-                } as any
-            },
-            {
-                name: "check_staff_availability",
-                description: "Check if a specific staff member is available.",
-                parameters: {
-                    type: "OBJECT",
-                    properties: {
-                        staff_name: { type: "STRING", description: "Name of the staff member" }
-                    },
-                    required: ["staff_name"]
-                } as any
-            },
-            {
-                name: "notify_staff",
-                description: "Notify a staff member that a visitor has arrived.",
-                parameters: {
-                    type: "OBJECT",
-                    properties: {
-                        staff_name: { type: "STRING", description: "Name of the staff member (Archana or Ravindra)" },
-                        visitor_name: { type: "STRING", description: "Name of the visitor" }
-                    },
-                    required: ["staff_name", "visitor_name"]
-                } as any
-            },
-            {
-                name: "log_delivery",
-                description: "Log a courier or vendor delivery.",
-                parameters: {
-                    type: "OBJECT",
-                    properties: {
-                        company: { type: "STRING", description: "Courier or vendor company name" },
-                        department: { type: "STRING", description: "Sales or Administration" },
-                        tracking_number: { type: "STRING", description: "Tracking or parcel number (optional)" },
-                        description: { type: "STRING", description: "What is being delivered (optional)" },
-                        recipient_company: { type: "STRING", description: "Which company/office in the building the parcel is for (optional)" },
-                        recipient: { type: "STRING", description: "Name of the recipient (optional)" },
-                        approval_decision: { type: "STRING", description: "allow, decline, or lobby_drop (optional)" }
-                    },
-                    required: ["company", "department"]
                 } as any
             },
             {

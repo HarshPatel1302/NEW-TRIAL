@@ -102,8 +102,171 @@ function isValidVisitorPhone(value: unknown) {
   return digits.length >= 10;
 }
 
+type ActiveReceptionFlow = "visitor" | "delivery";
+
+function normalizeIntentName(value: unknown) {
+  const raw = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_");
+
+  if (!raw) return "meet_person";
+  if (raw.includes("delivery") || raw.includes("parcel") || raw.includes("courier")) {
+    return "delivery";
+  }
+  if (raw.includes("appointment") || raw.includes("meet") || raw.includes("visit")) {
+    return "meet_person";
+  }
+  if (raw.includes("info") || raw.includes("inquiry") || raw.includes("about")) {
+    return "info";
+  }
+  return raw;
+}
+
+function inferActiveFlow(intent: unknown, collectedSlots: Record<string, string>): ActiveReceptionFlow {
+  const normalizedIntent = normalizeIntentName(intent);
+  if (normalizedIntent === "delivery") {
+    return "delivery";
+  }
+
+  if (
+    hasMeaningfulValue(collectedSlots.delivery_company) ||
+    hasMeaningfulValue(collectedSlots.recipient_company) ||
+    hasMeaningfulValue(collectedSlots.recipient_name) ||
+    hasMeaningfulValue(collectedSlots.delivery_partner)
+  ) {
+    return "delivery";
+  }
+
+  return "visitor";
+}
+
+function getMissingFieldsBeforePhoto(intent: unknown, collectedSlots: Record<string, string>) {
+  const flow = inferActiveFlow(intent, collectedSlots);
+  const missing: string[] = [];
+
+  if (flow === "delivery") {
+    if (!hasMeaningfulValue(collectedSlots.visitor_name) && !hasMeaningfulValue(collectedSlots.name)) {
+      missing.push("delivery_person_name");
+    }
+    if (
+      !hasMeaningfulValue(collectedSlots.delivery_company) &&
+      !hasMeaningfulValue(collectedSlots.delivery_partner) &&
+      !hasMeaningfulValue(collectedSlots.company)
+    ) {
+      missing.push("delivery_company");
+    }
+    if (
+      !hasMeaningfulValue(collectedSlots.recipient_company) &&
+      !hasMeaningfulValue(collectedSlots.target_company) &&
+      !hasMeaningfulValue(collectedSlots.department)
+    ) {
+      missing.push("recipient_company");
+    }
+    if (
+      !hasMeaningfulValue(collectedSlots.recipient_name) &&
+      !hasMeaningfulValue(collectedSlots.person_to_meet) &&
+      !hasMeaningfulValue(collectedSlots.meeting_with)
+    ) {
+      missing.push("recipient_name");
+    }
+  } else {
+    if (!hasMeaningfulValue(collectedSlots.visitor_name) && !hasMeaningfulValue(collectedSlots.name)) {
+      missing.push("name");
+    }
+    if (!isValidVisitorPhone(collectedSlots.phone || collectedSlots.visitor_phone || "")) {
+      missing.push("phone");
+    }
+    if (!hasMeaningfulValue(collectedSlots.meeting_with) && !hasMeaningfulValue(collectedSlots.person_to_meet)) {
+      missing.push("meeting_with");
+    }
+  }
+
+  return { flow, missing };
+}
+
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function normalizeSlotName(input: unknown) {
+  const raw = String(input || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_");
+
+  const aliases: Record<string, string> = {
+    name: "visitor_name",
+    full_name: "visitor_name",
+    visitorname: "visitor_name",
+    delivery_person_name: "visitor_name",
+    phone_number: "phone",
+    mobile: "phone",
+    mobile_number: "phone",
+    visitor_phone: "phone",
+    person_to_meet: "meeting_with",
+    whom_to_meet: "meeting_with",
+    meetingwith: "meeting_with",
+    where_to_go: "meeting_with",
+    unit: "meeting_with",
+    unit_number: "meeting_with",
+    flat: "meeting_with",
+    flat_number: "meeting_with",
+    recipient_person: "recipient_name",
+    parcel_for_person: "recipient_name",
+    parcel_recipient_name: "recipient_name",
+    person_in_company: "recipient_name",
+    recipient_company_name: "recipient_company",
+    target_company: "recipient_company",
+    parcel_for_company: "recipient_company",
+    parcel_company: "recipient_company",
+    delivery_company_name: "delivery_company",
+    courier_company: "delivery_company",
+    origin: "came_from",
+    where_from: "came_from",
+    from_where: "came_from",
+    delivery_partner: "delivery_company",
+  };
+
+  return aliases[raw] || raw;
+}
+
+function mergeCollectedSlotValue(slotName: string, incomingValue: unknown, existingValue: unknown) {
+  const incomingRaw = String(incomingValue || "").trim();
+  const existingRaw = String(existingValue || "").trim();
+
+  if (!existingRaw) {
+    return incomingRaw;
+  }
+  if (!hasMeaningfulValue(incomingRaw)) {
+    return existingRaw;
+  }
+
+  if (slotName === "phone") {
+    const existingDigits = toPhoneDigits(existingRaw);
+    const incomingDigits = toPhoneDigits(incomingRaw);
+    if (!incomingDigits) {
+      return existingDigits || existingRaw;
+    }
+    if (!existingDigits) {
+      return incomingDigits;
+    }
+    if (incomingDigits.length >= 10) {
+      return incomingDigits;
+    }
+    if (existingDigits.length >= 10) {
+      return existingDigits;
+    }
+    if (incomingDigits.includes(existingDigits)) {
+      return incomingDigits;
+    }
+    if (existingDigits.includes(incomingDigits)) {
+      return existingDigits;
+    }
+    return `${existingDigits}${incomingDigits}`.slice(0, 10);
+  }
+
+  return incomingRaw;
 }
 
 function normalizePurposeText(input: unknown) {
@@ -577,6 +740,7 @@ function ReceptionistApp() {
     let cancelled = false;
 
     if (connected) {
+      setConversationState({ collectedSlots: {} });
       hasSavedVisitorRef.current = false;
       hasPersistedSecuritySnapshotRef.current = false;
       sessionPhotoRef.current = null;
@@ -589,6 +753,7 @@ function ReceptionistApp() {
         }
       });
     } else {
+      setConversationState({ collectedSlots: {} });
       lastLoggedAssistantTextRef.current = "";
       stopCameraPreview();
       const activeSessionId = sessionIdRef.current;
@@ -801,59 +966,72 @@ function ReceptionistApp() {
 
         try {
           if (name === "classify_intent") {
+            const normalizedIntent = normalizeIntentName(args.detected_intent);
             setConversationState(prev => ({
               ...prev,
-              intent: args.detected_intent
+              intent: normalizedIntent
             }));
             setExpressionCue("listening_attentive");
 
             // Gesture based on intent
-            if (args.detected_intent === 'sales_inquiry' || args.detected_intent === 'first_time_visit') {
+            if (normalizedIntent === "info") {
               fireGesture('waving', undefined, 2);
             }
-            if (
-              args.detected_intent === 'meeting_request' ||
-              args.detected_intent === 'meet_person' ||
-              args.detected_intent === 'appointment'
-            ) {
+            if (normalizedIntent === "meet_person" || normalizedIntent === "delivery") {
               setExpressionCue("confirming_yes");
               fireGesture('nodYes', undefined, 2);
             }
 
             result = {
               status: "success",
-              intent: args.detected_intent,
-              message: `Intent classified as ${args.detected_intent}`
+              intent: normalizedIntent,
+              raw_intent: String(args.detected_intent || ""),
+              message: `Intent classified as ${normalizedIntent}`
             };
             if (activeSessionId) {
-              void DatabaseManager.updateSession(activeSessionId, { intent: args.detected_intent });
+              void DatabaseManager.updateSession(activeSessionId, { intent: normalizedIntent });
             }
           }
           else if (name === "collect_slot_value") {
-            const slotName = String(args.slot_name || "").trim().toLowerCase();
-            const slotValue = String(args.value || "").trim();
+            const slotName = normalizeSlotName(args.slot_name);
+            const disallowedSlotNames = [
+              "department",
+              "purpose",
+              "appointment_time",
+              "reference_id",
+              "notes",
+            ];
+            if (disallowedSlotNames.includes(slotName)) {
+              result = {
+                status: "ignored",
+                slot: slotName,
+                message:
+                  "This field is not required. Collect only the active flow details before photo capture.",
+              };
+            } else {
+            const isDeliverySlotName = ["delivery_company", "recipient_company", "recipient_name"].includes(slotName);
+            const rawSlotValue = String(args.value || "").trim();
+            const existingSlotValue = String(conversationState.collectedSlots[slotName] || "").trim();
+            const slotValue = mergeCollectedSlotValue(slotName, rawSlotValue, existingSlotValue);
+            const phoneDigitsCollected = slotName === "phone" ? toPhoneDigits(slotValue).length : 0;
+            const phoneNeedsMoreDigits = slotName === "phone" && phoneDigitsCollected > 0 && phoneDigitsCollected < 10;
             const shouldResolvePurposeCategory = [
               "purpose",
               "purpose_category",
               "category",
               "company",
               "delivery_company",
-              "delivery_partner",
             ].includes(slotName);
             const matchedPurpose = shouldResolvePurposeCategory
               ? findPurposeCategoryMatch(slotValue)
               : null;
             const shouldResolveMemberDestination = [
-              "where_to_go",
-              "person_to_meet",
               "meeting_with",
-              "whom_to_meet",
-              "recipient",
               "recipient_name",
-              "recipient_company",
             ].includes(slotName);
             const memberLookupQueryContext =
-              conversationState.collectedSlots.where_to_go ||
+              conversationState.collectedSlots.recipient_company ||
+              conversationState.collectedSlots.target_company ||
               conversationState.collectedSlots.came_from ||
               conversationState.collectedSlots.company ||
               "";
@@ -867,12 +1045,31 @@ function ReceptionistApp() {
             const encodedMatchedMembers = matchedMembers.length > 0
               ? encodeMembersForNotes(matchedMembers)
               : "";
+            const shouldClearMemberLookupState =
+              ["meeting_with", "recipient_name"].includes(slotName) &&
+              !!memberLookup &&
+              (!memberLookup.ok || matchedMemberIds.length === 0);
+            const shouldPromptForUnitNumber =
+              slotName === "meeting_with" &&
+              !!memberLookup &&
+              memberLookup.configured &&
+              memberLookup.ok &&
+              matchedMemberIds.length === 0;
 
             setConversationState(prev => ({
               ...prev,
+              ...(isDeliverySlotName ? { intent: "delivery" } : {}),
               collectedSlots: {
                 ...prev.collectedSlots,
                 [slotName]: slotValue,
+                ...(shouldClearMemberLookupState
+                  ? {
+                      member_ids: "",
+                      member_lookup_query: memberLookup?.query || "",
+                      member_match_count: "0",
+                      member_objects_uri: "",
+                    }
+                  : {}),
                 ...(matchedPurpose
                   ? {
                       purpose_category_id: String(matchedPurpose.category.category_id),
@@ -921,6 +1118,13 @@ function ReceptionistApp() {
               status: "success",
               slot: slotName,
               value: slotValue,
+              ...(phoneNeedsMoreDigits
+                ? {
+                    partial_phone: true,
+                    phone_digits_collected: phoneDigitsCollected,
+                    message: `Collected ${phoneDigitsCollected} phone digits. Ask only for remaining digits.`,
+                  }
+                : {}),
               ...(matchedPurpose
                 ? {
                     purpose_category_id: matchedPurpose.category.category_id,
@@ -948,9 +1152,22 @@ function ReceptionistApp() {
                   }
                 : {}),
             };
+            if (shouldPromptForUnitNumber) {
+              result = {
+                ...result,
+                status: "need_more_info",
+                missing_fields: ["unit_number"],
+                message:
+                  "Sorry, I am not able to find that member. Could you specify the unit number?",
+              };
+            }
+            }
           }
           else if (name === "save_visitor_info") {
-            const resolvedIntent = args.intent || conversationState.intent || "unknown";
+            const resolvedIntent = normalizeIntentName(
+              args.intent || conversationState.intent || "meet_person"
+            );
+            const isDeliveryIntent = resolvedIntent === "delivery";
             const resolvedName =
               args.name ||
               conversationState.collectedSlots.visitor_name ||
@@ -964,31 +1181,56 @@ function ReceptionistApp() {
             const normalizedPhone = toPhoneDigits(resolvedPhone);
             const resolvedMeetingWith =
               args.meeting_with ||
-              conversationState.collectedSlots.person_to_meet ||
               conversationState.collectedSlots.meeting_with ||
+              conversationState.collectedSlots.person_to_meet ||
+              conversationState.collectedSlots.recipient_name ||
               conversationState.collectedSlots.whom_to_meet ||
               "N/A";
+            const resolvedDeliveryCompany =
+              args.delivery_company ||
+              conversationState.collectedSlots.delivery_company ||
+              conversationState.collectedSlots.delivery_partner ||
+              args.company ||
+              conversationState.collectedSlots.company ||
+              "";
+            const resolvedRecipientCompany =
+              args.recipient_company ||
+              conversationState.collectedSlots.recipient_company ||
+              conversationState.collectedSlots.target_company ||
+              conversationState.collectedSlots.department ||
+              "";
+            const resolvedRecipientName =
+              args.recipient_name ||
+              conversationState.collectedSlots.recipient_name ||
+              conversationState.collectedSlots.person_to_meet ||
+              conversationState.collectedSlots.recipient ||
+              conversationState.collectedSlots.meeting_with ||
+              "";
             const resolvedCameFrom =
               args.came_from ||
               args.company ||
               conversationState.collectedSlots.came_from ||
               conversationState.collectedSlots.origin ||
               conversationState.collectedSlots.company ||
-              "N/A";
+              "Walk-in";
+            const finalMeetingWith = isDeliveryIntent
+              ? String(resolvedRecipientName || resolvedMeetingWith || "N/A").trim()
+              : String(resolvedMeetingWith || "N/A").trim();
+            const finalCompany = isDeliveryIntent
+              ? String(resolvedDeliveryCompany || resolvedCameFrom || "Delivery").trim()
+              : String(resolvedCameFrom || "Walk-in").trim();
             const resolvedPurpose =
               args.purpose ||
               conversationState.collectedSlots.purpose ||
               "";
-            const resolvedPurposeCategoryId = Number(
-              conversationState.collectedSlots.purpose_category_id || ""
-            );
-            const resolvedPurposeCategoryName =
-              conversationState.collectedSlots.purpose_category_name || "";
             const resolvedPurposeSubCategoryId = Number(
               conversationState.collectedSlots.purpose_sub_category_id || ""
             );
             const resolvedPurposeSubCategoryName =
               conversationState.collectedSlots.purpose_sub_category_name || "";
+            const finalPurposeCategoryId = resolvedIntent === "delivery" ? 3 : 1;
+            const finalPurposeCategoryName =
+              resolvedIntent === "delivery" ? "DELIVERY" : "GUEST";
             const resolvedWhereToGo =
               args.where_to_go ||
               conversationState.collectedSlots.where_to_go ||
@@ -1028,14 +1270,27 @@ function ReceptionistApp() {
             let resolvedMemberObjects = resolvedMemberObjectsEncoded
               ? decodeMembersFromNotes(resolvedMemberObjectsEncoded)
               : [];
-
-            if (!resolvedMemberIdsCsv && (hasMeaningfulValue(resolvedMeetingWith) || hasMeaningfulValue(resolvedWhereToGo))) {
-              const memberLookup = await resolveMembersForDestination(
-                [resolvedWhereToGo, resolvedMeetingWith]
+            const memberLookupPrimaryQuery = isDeliveryIntent
+              ? [resolvedRecipientName, resolvedMeetingWith]
                   .filter((value) => hasMeaningfulValue(value))
-                  .join(" "),
+                  .join(" ")
+              : [resolvedWhereToGo, resolvedMeetingWith]
+                  .filter((value) => hasMeaningfulValue(value))
+                  .join(" ");
+            const memberLookupSecondaryQuery = isDeliveryIntent
+              ? [resolvedRecipientCompany, resolvedDeliveryCompany, resolvedCameFrom]
+                  .filter((value) => hasMeaningfulValue(value))
+                  .join(" ")
+              : resolvedCameFrom;
+
+            if (
+              (!resolvedMemberIdsCsv || resolvedMemberObjects.length === 0) &&
+              hasMeaningfulValue(memberLookupPrimaryQuery)
+            ) {
+              const memberLookup = await resolveMembersForDestination(
+                memberLookupPrimaryQuery,
                 {
-                  secondaryQuery: resolvedCameFrom,
+                  secondaryQuery: memberLookupSecondaryQuery,
                 }
               );
 
@@ -1075,14 +1330,15 @@ function ReceptionistApp() {
             const notesWithPurposeCategory =
               [
                 String(args.notes || "").trim(),
-                Number.isFinite(resolvedPurposeCategoryId) && resolvedPurposeCategoryId > 0
-                  ? `purpose_category_id:${resolvedPurposeCategoryId}`
-                  : "",
+                `purpose_category_id:${finalPurposeCategoryId}`,
                 Number.isFinite(resolvedPurposeSubCategoryId) && resolvedPurposeSubCategoryId > 0
                   ? `purpose_sub_category_id:${resolvedPurposeSubCategoryId}`
                   : "",
                 hasMeaningfulValue(resolvedWhereToGo)
                   ? `where_to_go:${String(resolvedWhereToGo).trim()}`
+                  : "",
+                isDeliveryIntent && hasMeaningfulValue(resolvedRecipientCompany)
+                  ? `recipient_company:${String(resolvedRecipientCompany).trim()}`
                   : "",
                 resolvedMemberIdsCsv
                   ? `member_ids:${resolvedMemberIdsCsv}`
@@ -1106,102 +1362,137 @@ function ReceptionistApp() {
                 .filter(Boolean)
                 .join(" | ");
             const missingFields: string[] = [];
-            if (!hasMeaningfulValue(resolvedName) || String(resolvedName).trim().toLowerCase() === "visitor") {
-              missingFields.push("name");
-            }
-            if (!isValidVisitorPhone(resolvedPhone)) {
-              missingFields.push("phone");
-            }
-            if (!hasMeaningfulValue(resolvedWhereToGo)) {
-              missingFields.push("where_to_go");
-            }
-            if (!hasMeaningfulValue(resolvedMeetingWith)) {
-              missingFields.push("meeting_with");
-            }
-            if (!hasMeaningfulValue(resolvedCameFrom)) {
-              missingFields.push("came_from");
-            }
-
-            if (missingFields.length > 0) {
-              result = {
-                status: "need_more_info",
-                missing_fields: missingFields,
-                message:
-                  "Collect name, phone, where_to_go, meeting_with, and came_from before saving. Ask one missing field at a time.",
-              };
-            } else if (!visitorCheckInPhotoRef.current) {
-              result = {
-                status: "need_photo_capture",
-                missing_fields: ["photo"],
-                message:
-                  "Ask the visitor to stand still for 5 seconds, call capture_photo, then save_visitor_info again.",
-              };
-            } else {
-              const finalVisitorPhoto = visitorCheckInPhotoRef.current || args.photo || undefined;
-              const visitor = await DatabaseManager.saveVisitor({
-                name: resolvedName,
-                phone: normalizedPhone,
-                meetingWith: resolvedMeetingWith,
-                intent: resolvedIntent,
-                department: args.department,
-                purpose: resolvedPurpose,
-                company: resolvedCameFrom,
-                appointmentTime: args.appointment_time,
-                referenceId: args.reference_id,
-                notes: notesWithPurposeCategory,
-                photo: finalVisitorPhoto,
-              }, { sessionId: activeSessionId });
-
-              hasSavedVisitorRef.current = true;
-              result = {
-                status: "success",
-                visitor_id: visitor.id,
-                photo_format: "image/jpeg",
-                purpose_category_id: Number.isFinite(resolvedPurposeCategoryId) && resolvedPurposeCategoryId > 0
-                  ? resolvedPurposeCategoryId
-                  : null,
-                purpose_category_name: resolvedPurposeCategoryName || null,
-                purpose_sub_category_id:
-                  Number.isFinite(resolvedPurposeSubCategoryId) && resolvedPurposeSubCategoryId > 0
-                    ? resolvedPurposeSubCategoryId
-                    : null,
-                purpose_sub_category_name: resolvedPurposeSubCategoryName || null,
-                member_ids: resolvedMemberIdsCsv
-                  ? resolvedMemberIdsCsv.split(",").map((id: string) => Number(id)).filter((id: number) => Number.isFinite(id))
-                  : [],
-                matched_members: resolvedMemberObjects,
-                approval_decision: resolvedApprovalDecision || null,
-                approval_status: resolvedApprovalStatus || null,
-              };
-              if (activeSessionId) {
-                void DatabaseManager.updateSession(activeSessionId, {
-                  visitorId: visitor.id,
-                  intent: resolvedIntent,
-                });
+              if (!hasMeaningfulValue(resolvedName) || String(resolvedName).trim().toLowerCase() === "visitor") {
+                missingFields.push("name");
+              }
+              if (isDeliveryIntent) {
+                if (!hasMeaningfulValue(resolvedDeliveryCompany)) {
+                  missingFields.push("delivery_company");
+                }
+                if (!hasMeaningfulValue(resolvedRecipientCompany)) {
+                  missingFields.push("recipient_company");
+                }
+                if (!hasMeaningfulValue(resolvedRecipientName)) {
+                  missingFields.push("recipient_name");
+                }
+              } else {
+                if (!isValidVisitorPhone(resolvedPhone)) {
+                  missingFields.push("phone");
+                }
+                if (!hasMeaningfulValue(resolvedMeetingWith)) {
+                  missingFields.push("meeting_with");
+                }
               }
 
-              // External API sync is best-effort and must not block speech/tool response.
-              void (async () => {
-                const externalSync = await syncWalkInDetailsToExternalApis({
+              if (missingFields.length > 0) {
+                result = {
+                  status: "need_more_info",
+                  missing_fields: missingFields,
+                  message:
+                    isDeliveryIntent
+                      ? "Collect delivery person name, delivery company, recipient company, and recipient name before saving."
+                      : "Collect name, phone, and whom they want to visit before saving. Ask one missing field at a time.",
+                };
+              } else if (!visitorCheckInPhotoRef.current) {
+                result = {
+                  status: "need_photo_capture",
+                  missing_fields: ["photo"],
+                  message:
+                    isDeliveryIntent
+                      ? "Ask the delivery person to stand still for 5 seconds, call capture_photo, then save_visitor_info again."
+                      : "Ask the visitor to stand still for 5 seconds, call capture_photo, then save_visitor_info again.",
+                };
+              } else if (!isDeliveryIntent && (!resolvedMemberIdsCsv || resolvedMemberObjects.length === 0)) {
+                result = {
+                  status: "need_more_info",
+                  missing_fields: ["unit_number"],
+                  message:
+                    "Sorry, I am not able to find that member. Could you specify the unit number?",
+                };
+              } else {
+                const finalVisitorPhoto = visitorCheckInPhotoRef.current || args.photo || undefined;
+                const resolvedDepartment = String(
+                  args.department ||
+                  conversationState.collectedSlots.department ||
+                  "Reception"
+                ).trim() || "Reception";
+                const finalPhone = isDeliveryIntent
+                  ? (normalizedPhone || "N/A")
+                  : normalizedPhone;
+                const visitor = await DatabaseManager.saveVisitor({
                   name: resolvedName,
-                  phone: normalizedPhone,
-                  cameFrom: resolvedCameFrom,
-                  meetingWith: resolvedMeetingWith,
-                  localVisitorId: visitor.id,
+                  phone: finalPhone,
+                  meetingWith: finalMeetingWith,
                   intent: resolvedIntent,
-                  sessionId: activeSessionId,
+                  department: resolvedDepartment,
+                  purpose: resolvedPurpose || (isDeliveryIntent ? "Delivery check-in" : "Visitor check-in"),
+                  company: finalCompany,
+                  appointmentTime: args.appointment_time,
+                  referenceId: args.reference_id,
+                  notes: notesWithPurposeCategory,
                   photo: finalVisitorPhoto,
-                });
+                }, { sessionId: activeSessionId });
 
-                if (activeSessionId && externalSync.attempted && !externalSync.allSuccessful) {
-                  await DatabaseManager.logSessionEvent(activeSessionId, {
-                    role: "system",
-                    eventType: "external_walkin_sync_partial_failure",
-                    content: JSON.stringify(externalSync.results),
+                hasSavedVisitorRef.current = true;
+                result = {
+                  status: "success",
+                  visitor_id: visitor.id,
+                  photo_format: "image/jpeg",
+                  purpose_category_id: finalPurposeCategoryId,
+                  purpose_category_name: finalPurposeCategoryName,
+                  purpose_sub_category_id:
+                    Number.isFinite(resolvedPurposeSubCategoryId) && resolvedPurposeSubCategoryId > 0
+                      ? resolvedPurposeSubCategoryId
+                      : null,
+                  purpose_sub_category_name: resolvedPurposeSubCategoryName || null,
+                  member_ids: resolvedMemberIdsCsv
+                    ? resolvedMemberIdsCsv.split(",").map((id: string) => Number(id)).filter((id: number) => Number.isFinite(id))
+                    : [],
+                  matched_members: resolvedMemberObjects,
+                  approval_decision: resolvedApprovalDecision || null,
+                  approval_status: resolvedApprovalStatus || null,
+                };
+                if (activeSessionId) {
+                  void DatabaseManager.updateSession(activeSessionId, {
+                    visitorId: visitor.id,
+                    intent: resolvedIntent,
                   });
                 }
-              })();
-            }
+
+                // External API sync is best-effort and must not block speech/tool response.
+                void (async () => {
+                  const configuredCompanyId = Number(process.env.REACT_APP_WALKIN_COMPANY_ID || "");
+                  const externalSync = await syncWalkInDetailsToExternalApis({
+                    name: resolvedName,
+                    phone: normalizedPhone,
+                    cameFrom: finalCompany,
+                    meetingWith: finalMeetingWith,
+                    localVisitorId: visitor.id,
+                    intent: resolvedIntent,
+                    sessionId: activeSessionId,
+                    photo: finalVisitorPhoto,
+                    visitorPurposeCategoryId:
+                      finalPurposeCategoryId,
+                    visitorPurposeSubCategoryId:
+                      Number.isFinite(resolvedPurposeSubCategoryId) && resolvedPurposeSubCategoryId > 0
+                        ? resolvedPurposeSubCategoryId
+                        : undefined,
+                    memberDetails: resolvedMemberObjects,
+                    companyId: Number.isFinite(configuredCompanyId) && configuredCompanyId > 0
+                      ? configuredCompanyId
+                      : undefined,
+                    isStaff: false,
+                  });
+
+                  if (activeSessionId && externalSync.attempted && !externalSync.allSuccessful) {
+                    await DatabaseManager.logSessionEvent(activeSessionId, {
+                      role: "system",
+                      eventType: "external_walkin_sync_partial_failure",
+                      content: JSON.stringify(externalSync.results),
+                    });
+                  }
+                })();
+              }
           }
           else if (name === "check_returning_visitor") {
             const visitor = await DatabaseManager.findByPhone(args.phone);
@@ -1260,6 +1551,7 @@ function ReceptionistApp() {
             const resolvedRecipientName =
               String(
                 args.recipient_name ||
+                conversationState.collectedSlots.recipient_name ||
                 conversationState.collectedSlots.person_to_meet ||
                 conversationState.collectedSlots.recipient ||
                 conversationState.collectedSlots.meeting_with ||
@@ -1294,13 +1586,16 @@ function ReceptionistApp() {
             if (!hasMeaningfulValue(resolvedRecipientName)) {
               missingFields.push("recipient_name");
             }
+            if (!hasMeaningfulValue(resolvedDeliveryPersonName)) {
+              missingFields.push("delivery_person_name");
+            }
 
             if (missingFields.length > 0) {
               result = {
                 status: "need_more_info",
                 missing_fields: missingFields,
                 message:
-                  "Collect delivery company, recipient company, and recipient name before requesting delivery approval.",
+                  "Collect delivery person name, delivery company, recipient company, and recipient name before requesting delivery approval.",
               };
             } else if (!visitorCheckInPhotoRef.current) {
               result = {
@@ -1396,11 +1691,12 @@ function ReceptionistApp() {
             const resolvedRecipient =
               String(
                 args.recipient ||
-                conversationState.collectedSlots.person_to_meet ||
+                conversationState.collectedSlots.recipient_name ||
+                conversationState.collectedSlots.meeting_with ||
                 conversationState.collectedSlots.recipient ||
                 "N/A"
               ).trim();
-            const resolvedDepartment = String(args.department || "Administration").trim() || "Administration";
+            const resolvedDepartment = resolvedRecipientCompany || "Delivery";
             const resolvedDecision = String(args.approval_decision || "").trim().toLowerCase();
             const deliveryNotes = [String(args.description || "").trim()];
             if (resolvedRecipientCompany) {
@@ -1409,6 +1705,7 @@ function ReceptionistApp() {
             if (resolvedDecision) {
               deliveryNotes.push(`approval_decision:${resolvedDecision}`);
             }
+            deliveryNotes.push(`approval_source:request_delivery_approval`);
             await DatabaseManager.saveVisitor({
               name: `Delivery from ${resolvedDeliveryCompany}`,
               phone: "N/A",
@@ -1428,43 +1725,112 @@ function ReceptionistApp() {
             };
           }
           else if (name === "end_interaction") {
-            if (activeSessionId) {
-              await persistSecuritySnapshotIfNeeded(activeSessionId);
-              await DatabaseManager.endSession(activeSessionId, {
-                status: "completed",
-                summary: "Interaction completed through end_interaction tool.",
-              });
-              sessionIdRef.current = null;
-            }
-            setExpressionCue("goodbye_formal");
-            fireGesture('bow', undefined, 3);
-            console.log("Interaction ended. Resetting in 5 seconds...");
-            setTimeout(() => {
-              stopCameraPreview();
-              client.disconnect();
-              setVideoStream(null);
-              setConversationState({ collectedSlots: {} });
-              visitorCheckInPhotoRef.current = null;
-              setLastAudioText("");
-              setExpressionCue("neutral_professional");
-            }, 6000);
-            result = { status: "success", message: "Resetting kiosk." };
-          }
-          else if (name === "capture_photo") {
-            const captured = await captureCheckInPhotoAfterCountdown("tool_call_after_5s_still_pose", 5000);
-            if (captured) {
+            const hasCollectedAnySlot = Object.values(conversationState.collectedSlots).some(
+              (value) => hasMeaningfulValue(value)
+            );
+            if (!hasSavedVisitorRef.current && hasCollectedAnySlot) {
+              const readiness = getMissingFieldsBeforePhoto(
+                conversationState.intent,
+                conversationState.collectedSlots
+              );
+              const pending = [...readiness.missing];
+              if (!visitorCheckInPhotoRef.current) {
+                pending.push("photo");
+              }
+              if (
+                readiness.flow === "delivery" &&
+                !hasMeaningfulValue(conversationState.collectedSlots.approval_decision)
+              ) {
+                pending.push("delivery_approval");
+              }
+              pending.push("save_visitor_info");
+
+              if (activeSessionId) {
+                await DatabaseManager.logSessionEvent(activeSessionId, {
+                  role: "system",
+                  eventType: "end_interaction_blocked_pending_data",
+                  content: JSON.stringify({
+                    flow: readiness.flow,
+                    pending_fields: Array.from(new Set(pending)),
+                  }),
+                });
+              }
+
               result = {
-                status: "success",
-                message: "Photo captured successfully in JPG format after 5 seconds.",
-                format: "image/jpeg",
+                status: "need_more_info",
+                flow: readiness.flow,
+                missing_fields: Array.from(new Set(pending)),
+                message:
+                  readiness.flow === "delivery"
+                    ? "Do not end interaction yet. Complete delivery details, photo, approval, then save visitor info."
+                    : "Do not end interaction yet. Complete visitor details, photo, then save visitor info.",
               };
             } else {
+              if (activeSessionId) {
+                await persistSecuritySnapshotIfNeeded(activeSessionId);
+                await DatabaseManager.endSession(activeSessionId, {
+                  status: "completed",
+                  summary: "Interaction completed through end_interaction tool.",
+                });
+                sessionIdRef.current = null;
+              }
+              setExpressionCue("goodbye_formal");
+              fireGesture('bow', undefined, 3);
+              console.log("Interaction ended. Resetting in 5 seconds...");
+              setTimeout(() => {
+                stopCameraPreview();
+                client.disconnect();
+                setVideoStream(null);
+                setConversationState({ collectedSlots: {} });
+                visitorCheckInPhotoRef.current = null;
+                setLastAudioText("");
+                setExpressionCue("neutral_professional");
+              }, 6000);
+              result = { status: "success", message: "Resetting kiosk." };
+            }
+          }
+          else if (name === "capture_photo") {
+            const photoReadiness = getMissingFieldsBeforePhoto(
+              conversationState.intent,
+              conversationState.collectedSlots
+            );
+            if (photoReadiness.missing.length > 0) {
+              if (activeSessionId) {
+                await DatabaseManager.logSessionEvent(activeSessionId, {
+                  role: "system",
+                  eventType: "camera_capture_blocked_missing_fields",
+                  content: JSON.stringify({
+                    flow: photoReadiness.flow,
+                    missing_fields: photoReadiness.missing,
+                    intent: conversationState.intent || "",
+                  }),
+                });
+              }
               result = {
-                status: "error",
+                status: "need_more_info",
+                flow: photoReadiness.flow,
+                missing_fields: photoReadiness.missing,
                 message:
-                  lastCaptureErrorRef.current ||
-                  "Camera not available. Ensure video permission is enabled and try again.",
+                  photoReadiness.flow === "delivery"
+                    ? "Collect delivery person name, delivery company, recipient company, and recipient name before photo capture."
+                    : "Collect name, phone, and whom they want to visit before photo capture.",
               };
+            } else {
+              const captured = await captureCheckInPhotoAfterCountdown("tool_call_after_5s_still_pose", 5000);
+              if (captured) {
+                result = {
+                  status: "success",
+                  message: "Photo captured successfully in JPG format after 5 seconds.",
+                  format: "image/jpeg",
+                };
+              } else {
+                result = {
+                  status: "error",
+                  message:
+                    lastCaptureErrorRef.current ||
+                    "Camera not available. Ensure video permission is enabled and try again.",
+                };
+              }
             }
           }
         } catch (e: any) {

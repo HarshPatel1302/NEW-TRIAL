@@ -25,7 +25,12 @@ const DELIVERY_APPROVAL_API_URL = String(
 const DELIVERY_APPROVAL_API_KEY = String(
   process.env.REACT_APP_DELIVERY_APPROVAL_API_KEY || ""
 ).trim();
+const FORCE_LOBBY_DROP_RESPONSE =
+  String(process.env.REACT_APP_FORCE_LOBBY_DELIVERY_RESPONSE || "true")
+    .trim()
+    .toLowerCase() !== "false";
 const REQUEST_TIMEOUT_MS = 9000;
+const FORCED_LOBBY_MESSAGE = "Please keep the parcel at the lobby.";
 
 function normalizeDecision(value: unknown): DeliveryApprovalDecision | null {
   const normalized = String(value || "")
@@ -68,6 +73,18 @@ function fallbackMessage(decision: DeliveryApprovalDecision) {
   return "Please keep the parcel at the lobby. The team will collect it.";
 }
 
+function applyTestingOverride(result: DeliveryApprovalResult): DeliveryApprovalResult {
+  if (!FORCE_LOBBY_DROP_RESPONSE) {
+    return result;
+  }
+  return {
+    ...result,
+    status: "success",
+    decision: "lobby_drop",
+    message: FORCED_LOBBY_MESSAGE,
+  };
+}
+
 async function parseJsonSafe(response: Response) {
   try {
     return await response.json();
@@ -80,12 +97,12 @@ export async function requestDeliveryApproval(
   input: DeliveryApprovalRequest
 ): Promise<DeliveryApprovalResult> {
   if (!DELIVERY_APPROVAL_API_URL) {
-    return {
+    return applyTestingOverride({
       status: "pending_api",
       decision: "lobby_drop",
       message:
         "Delivery approval API is not configured yet. Please keep the parcel at lobby for collection.",
-    };
+    });
   }
 
   const controller = new AbortController();
@@ -128,31 +145,31 @@ export async function requestDeliveryApproval(
       fallbackMessage(decision);
 
     if (!response.ok) {
-      return {
+      return applyTestingOverride({
         status: "error",
         decision,
         message,
         statusCode: response.status,
         raw: payload,
-      };
+      });
     }
 
-    return {
+    return applyTestingOverride({
       status: "success",
       decision,
       message,
       statusCode: response.status,
       raw: payload,
-    };
+    });
   } catch (error: any) {
-    return {
+    return applyTestingOverride({
       status: "error",
       decision: "lobby_drop",
       message:
         error?.name === "AbortError"
           ? "Approval request timed out. Please keep the parcel at lobby."
           : "Approval service is unavailable. Please keep the parcel at lobby.",
-    };
+    });
   } finally {
     clearTimeout(timeout);
   }

@@ -94,8 +94,26 @@ export class GenAILiveClient extends EventEmitter<LiveClientEventTypes> {
     this._status = "disconnected";
   }
 
+  private getSocketReadyState(): number | null {
+    const maybeState = (this._session as any)?.conn?.ws?.readyState;
+    return typeof maybeState === "number" ? maybeState : null;
+  }
+
+  private isSocketOpen() {
+    const readyState = this.getSocketReadyState();
+    if (readyState === null) {
+      // If SDK internals are not introspectable in this runtime, rely on status/session checks.
+      return true;
+    }
+    const openState =
+      typeof WebSocket !== "undefined" && typeof WebSocket.OPEN === "number"
+        ? WebSocket.OPEN
+        : 1;
+    return readyState === openState;
+  }
+
   private canSend() {
-    return this._status === "connected" && !!this._session;
+    return this._status === "connected" && !!this._session && this.isSocketOpen();
   }
 
   private handleSendError(error: unknown, operation: string) {
@@ -266,7 +284,7 @@ export class GenAILiveClient extends EventEmitter<LiveClientEventTypes> {
    */
   sendRealtimeInput(chunks: Array<{ mimeType: string; data: string }>) {
     if (!this.canSend()) {
-      this.log("client.realtimeInput.skipped", "Session not connected");
+      // Realtime input is high-frequency; avoid noisy logs during disconnect races.
       return;
     }
 

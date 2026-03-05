@@ -452,12 +452,13 @@ export async function resolveMembersForDestination(
   const normalizedPrimary = toDisplayText(primaryQuery);
   const normalizedSecondary = toDisplayText(options.secondaryQuery || "");
   const combinedQuery = [normalizedPrimary, normalizedSecondary].filter(Boolean).join(" ").trim();
+  const scoringQuery = normalizedPrimary || combinedQuery;
 
-  if (!combinedQuery) {
+  if (!scoringQuery) {
     return {
       configured: hasMemberApiConfig(),
       ok: false,
-      query: combinedQuery,
+      query: scoringQuery,
       memberIds: [],
       matchedMembers: [],
       totalCandidates: 0,
@@ -470,7 +471,7 @@ export async function resolveMembersForDestination(
     return {
       configured: directory.configured,
       ok: false,
-      query: combinedQuery,
+      query: scoringQuery,
       memberIds: [],
       matchedMembers: [],
       totalCandidates: 0,
@@ -483,7 +484,7 @@ export async function resolveMembersForDestination(
   const scored = members
     .map((member) => ({
       member,
-      score: scoreMember(member, combinedQuery),
+      score: scoreMember(member, scoringQuery),
     }))
     .filter((entry) => entry.score >= MIN_SCORE_FOR_MATCH)
     .sort((a, b) => b.score - a.score);
@@ -505,7 +506,7 @@ export async function resolveMembersForDestination(
   return {
     configured: true,
     ok: true,
-    query: combinedQuery,
+    query: scoringQuery,
     memberIds: deduped.map((member) => member.member_id),
     matchedMembers: deduped,
     totalCandidates: members.length,
