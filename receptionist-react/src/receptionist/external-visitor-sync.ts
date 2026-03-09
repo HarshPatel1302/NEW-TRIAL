@@ -65,6 +65,17 @@ export type ExternalSyncResult = {
   results: FieldSyncResult[];
 };
 
+export type ExternalVisitorPhoneSearchResult = {
+  configured: boolean;
+  ok: boolean;
+  found: boolean;
+  statusCode?: number;
+  message?: string;
+  error?: string;
+  visitorId?: number | null;
+  visitorName?: string;
+};
+
 type ApiEnvelope<T = unknown> = {
   message?: string;
   status?: string;
@@ -191,6 +202,7 @@ function buildMemberDetailsPayload(details: ExternalWalkInDetails) {
             ""
         )
       );
+      const memberId = toPositiveInt(memberIds);
       const name = sanitizeText(
         String(
           (member as ExternalMemberDetail).name ||
@@ -216,10 +228,10 @@ function buildMemberDetailsPayload(details: ExternalWalkInDetails) {
             ""
         )
       );
-      const memberOldSsoId = sanitizeText(
+      const userId = sanitizeText(
         String(
-          (member as ExternalMemberDetail).member_old_sso_id ||
-            (member as ExternalMemberDetail).user_id ||
+          (member as ExternalMemberDetail).user_id ||
+            (member as ExternalMemberDetail).member_old_sso_id ||
             (member as MatchedMember).user_id ||
             ""
         )
@@ -228,20 +240,38 @@ function buildMemberDetailsPayload(details: ExternalWalkInDetails) {
       return {
         unit_id: unitId,
         building_unit: buildingUnit,
+        // Keep both naming variants because upstream APIs use inconsistent contracts.
         member_ids: memberIds,
+        member_id: memberId || memberIds,
         name,
+        member_name: name,
         mobile_number: mobile,
+        member_mobile_number: mobile,
         email,
-        member_old_sso_id: memberOldSsoId,
+        member_email_id: email,
+        member_old_sso_id: userId,
+        user_id: userId,
       };
     })
     .filter((member) => {
-      const hasMemberId = sanitizeText(String(member.member_ids || "")).length > 0;
+      const hasMemberId =
+        sanitizeText(String(member.member_id || "")).length > 0 ||
+        sanitizeText(String(member.member_ids || "")).length > 0;
       const hasMemberName = sanitizeText(String(member.name || "")).length > 0;
       return hasMemberId || hasMemberName;
     });
+  const deduped = new Map<string, Record<string, unknown>>();
+  mapped.forEach((member) => {
+    const memberId = sanitizeText(String(member.member_id || member.member_ids || ""));
+    const unitId = sanitizeText(String(member.unit_id || ""));
+    const memberName = sanitizeText(String(member.name || member.member_name || "")).toLowerCase();
+    const dedupeKey = `${memberId}|${unitId}|${memberName}`;
+    if (!deduped.has(dedupeKey)) {
+      deduped.set(dedupeKey, member);
+    }
+  });
 
-  return mapped;
+  return Array.from(deduped.values());
 }
 
 function extractVisitorId(data: unknown): number | null {
@@ -269,6 +299,34 @@ function extractVisitorId(data: unknown): number | null {
   }
 
   return null;
+}
+
+function extractVisitorName(data: unknown): string {
+  if (!data || typeof data !== "object") {
+    return "";
+  }
+
+  const record = data as Record<string, unknown>;
+  const directName = sanitizeText(
+    String(
+      record.name ||
+      record.visitor_name ||
+      record.visitor_full_name ||
+      record.full_name ||
+      ""
+    )
+  );
+  if (directName) {
+    return directName;
+  }
+
+  const firstName = sanitizeText(
+    String(record.first_name || record.visitor_first_name || "")
+  );
+  const lastName = sanitizeText(
+    String(record.last_name || record.visitor_last_name || "")
+  );
+  return [firstName, lastName].filter(Boolean).join(" ").trim();
 }
 
 function extractVisitorLogId(data: unknown): number | null {
@@ -686,7 +744,18 @@ class GateVisitorApiClient {
     }
 
     if (fallbackCandidates.length > 0) {
-      return fallbackCandidates[0];
+      const sorted = [...fallbackCandidates].sort((a, b) => {
+        const score = (candidate: {
+          memberId: number;
+          userId: string;
+          memberMobileNumber: string;
+        }) =>
+          (candidate.userId ? 2 : 0) +
+          (candidate.memberMobileNumber ? 2 : 0) +
+          (candidate.memberId ? 1 : 0);
+        return score(b) - score(a);
+      });
+      return sorted[0];
     }
 
     return {
@@ -769,36 +838,24 @@ class GateVisitorApiClient {
     };
   }
 
-  async searchVisitor(details: ExternalWalkInDetails): Promise<{
-    result: FieldSyncResult;
-    found: boolean;
-    visitorId: number | null;
-  }> {
+  async searchVisitorByPhone(phoneInput: string): Promise<ExternalVisitorPhoneSearchResult> {
     if (!this.hasApiConfig() || !this.hasLoginConfig()) {
       return {
-        result: {
-          field: "search_visitor",
-          configured: false,
-          ok: false,
-          error: "Missing gate API configuration",
-        },
+        configured: false,
+        ok: false,
         found: false,
-        visitorId: null,
+        error: "Missing gate API configuration",
       };
     }
 
-    const mobile = onlyDigits(details.phone);
+    const mobile = onlyDigits(phoneInput);
     if (!mobile) {
       return {
-        result: {
-          field: "search_visitor",
-          configured: true,
-          ok: false,
-          skipped: true,
-          message: "Skipped search because phone number is missing.",
-        },
+        configured: true,
+        ok: false,
         found: false,
-        visitorId: null,
+        statusCode: 400,
+        error: "phone number is required",
       };
     }
 
@@ -822,15 +879,11 @@ class GateVisitorApiClient {
 
     if (!response.ok) {
       return {
-        result: {
-          field: "search_visitor",
-          configured: true,
-          ok: false,
-          statusCode: response.status,
-          error: toMessageText(payload?.message) || `HTTP ${response.status}`,
-        },
+        configured: true,
+        ok: false,
         found: false,
-        visitorId: null,
+        statusCode: response.status,
+        error: toMessageText(payload?.message) || `HTTP ${response.status}`,
       };
     }
 
@@ -839,18 +892,69 @@ class GateVisitorApiClient {
       : [];
     const found = rows.length > 0;
     const visitorId = found ? extractVisitorId(rows[0]) : null;
+    const visitorName = found ? extractVisitorName(rows[0]) : "";
+
+    return {
+      configured: true,
+      ok: true,
+      found,
+      statusCode: response.status,
+      message: toMessageText(payload?.message),
+      visitorId,
+      visitorName,
+    };
+  }
+
+  async searchVisitor(details: ExternalWalkInDetails): Promise<{
+    result: FieldSyncResult;
+    found: boolean;
+    visitorId: number | null;
+  }> {
+    const search = await this.searchVisitorByPhone(details.phone);
+    if (!search.configured) {
+      return {
+        result: {
+          field: "search_visitor",
+          configured: false,
+          ok: false,
+          error: search.error || "Missing gate API configuration",
+        },
+        found: false,
+        visitorId: null,
+      };
+    }
+
+    if (!search.ok) {
+      return {
+        result: {
+          field: "search_visitor",
+          configured: true,
+          ok: false,
+          statusCode: search.statusCode,
+          error: search.error || "Search visitor failed",
+          ...(search.statusCode === 400
+            ? {
+                skipped: true,
+                message: search.error || "Skipped search because phone number is missing.",
+              }
+            : {}),
+        },
+        found: false,
+        visitorId: null,
+      };
+    }
 
     return {
       result: {
         field: "search_visitor",
         configured: true,
         ok: true,
-        statusCode: response.status,
-        message: toMessageText(payload?.message),
-        visitorId,
+        statusCode: search.statusCode,
+        message: search.message,
+        visitorId: search.visitorId ?? null,
       },
-      found,
-      visitorId,
+      found: search.found,
+      visitorId: search.visitorId ?? null,
     };
   }
 
@@ -977,14 +1081,17 @@ class GateVisitorApiClient {
       };
     }
 
-    const payload = this.buildVisitorLogPayload(details, visitorId);
+    let payload: Record<string, unknown> = this.buildVisitorLogPayload(
+      details,
+      visitorId
+    ) as Record<string, unknown>;
     console.info("[WalkInSync] Visitor log API call", {
       method: "POST",
       url: GATE_VISITOR_LOG_API_URL,
       payload,
     });
 
-    const { response, payload: responsePayload } = await this.requestWithAuth(
+    let visitorLogRequest = await this.requestWithAuth(
       GATE_VISITOR_LOG_API_URL,
       {
         method: "POST",
@@ -994,13 +1101,41 @@ class GateVisitorApiClient {
         body: JSON.stringify(payload),
       }
     );
-    const typed = responsePayload as VisitorLogResponse;
+    let response = visitorLogRequest.response;
+    let typed = visitorLogRequest.payload as VisitorLogResponse;
+    let messageText = toMessageText(typed?.message);
+
+    if (
+      !response.ok &&
+      response.status === 500 &&
+      /visitor_purpose_sub_category_id/i.test(messageText) &&
+      "visitor_purpose_sub_category_id" in payload
+    ) {
+      const fallbackPayload: Record<string, unknown> = { ...payload };
+      delete fallbackPayload.visitor_purpose_sub_category_id;
+      payload = fallbackPayload;
+
+      console.warn(
+        "[WalkInSync] Visitor log sub-category rejected. Retrying without visitor_purpose_sub_category_id."
+      );
+      visitorLogRequest = await this.requestWithAuth(GATE_VISITOR_LOG_API_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+      response = visitorLogRequest.response;
+      typed = visitorLogRequest.payload as VisitorLogResponse;
+      messageText = toMessageText(typed?.message);
+    }
+
     const visitorLogId = extractVisitorLogId(typed?.data || typed);
 
     console.info("[WalkInSync] Visitor log API response", {
       status: response.status,
       ok: response.ok,
-      message: toMessageText(typed?.message),
+      message: messageText,
     });
 
     if (!response.ok) {
@@ -1009,7 +1144,7 @@ class GateVisitorApiClient {
         configured: true,
         ok: false,
         statusCode: response.status,
-        error: toMessageText(typed?.message) || `HTTP ${response.status}`,
+        error: messageText || `HTTP ${response.status}`,
         visitorId,
         visitorLogId,
         requestPayload: payload,
@@ -1021,7 +1156,7 @@ class GateVisitorApiClient {
       configured: true,
       ok: true,
       statusCode: response.status,
-      message: toMessageText(typed?.message),
+      message: messageText,
       visitorId,
       visitorLogId,
       requestPayload: payload,
@@ -1173,6 +1308,13 @@ function getGateApiClient() {
     });
   }
   return gateApiClient;
+}
+
+export async function searchVisitorByPhoneInGate(
+  phone: string
+): Promise<ExternalVisitorPhoneSearchResult> {
+  const client = getGateApiClient();
+  return client.searchVisitorByPhone(phone);
 }
 
 export async function syncWalkInDetailsToExternalApis(

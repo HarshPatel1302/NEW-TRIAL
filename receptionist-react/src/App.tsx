@@ -17,13 +17,17 @@
 import { useRef, useState, useEffect, useCallback } from "react";
 import "./App.scss";
 import { LiveAPIProvider, useLiveAPIContext } from "./contexts/LiveAPIContext";
-import Avatar3D, { Avatar3DRef } from "./components/Avatar3D/Avatar3D";
+import { Avatar3DRef } from "./components/Avatar3D/Avatar3D";
+import AvatarController, { AvatarPipelineMode } from "./components/avatar/AvatarController";
 import ControlTray from "./components/control-tray/ControlTray";
 import { LiveClientOptions } from "./types";
 import { RECEPTIONIST_PERSONA } from "./receptionist/config";
 import { TOOLS } from "./receptionist/tools";
 import { DatabaseManager } from "./receptionist/database";
-import { syncWalkInDetailsToExternalApis } from "./receptionist/external-visitor-sync";
+import {
+  searchVisitorByPhoneInGate,
+  syncWalkInDetailsToExternalApis,
+} from "./receptionist/external-visitor-sync";
 import { requestDeliveryApproval } from "./receptionist/delivery-approval";
 import {
   decodeMembersFromNotes,
@@ -36,6 +40,15 @@ import { ExpressionCue } from "./components/Avatar3D/facial-types";
 import AdminDashboard from "./admin/AdminDashboard";
 
 const API_KEY = (process.env.REACT_APP_GEMINI_API_KEY || "").trim();
+const AVATAR_PIPELINE_MODE: AvatarPipelineMode =
+  String(process.env.REACT_APP_AVATAR_PIPELINE_MODE || "legacy").trim().toLowerCase() === "local"
+    ? "local"
+    : "legacy";
+const LOCAL_AVATAR_PIPELINE_ENABLED = AVATAR_PIPELINE_MODE === "local";
+const ENABLE_CAMERA_PERSON_DETECTION =
+  String(process.env.REACT_APP_ENABLE_CAMERA_PERSON_DETECTION || "false")
+    .trim()
+    .toLowerCase() === "true";
 
 const apiOptions: LiveClientOptions = {
   apiKey: API_KEY,
@@ -82,6 +95,7 @@ const GESTURE_COOLDOWN_MS: Record<GestureState, number> = {
   nodYes: 1100,
   bow: 3000,
 };
+const TOOL_SIGNATURE_CACHE_TTL_MS = 10000;
 
 const PURPOSE_CATALOG = purposeCatalog as PurposeCatalog;
 
@@ -141,6 +155,16 @@ function inferActiveFlow(intent: unknown, collectedSlots: Record<string, string>
   return "visitor";
 }
 
+function defaultPurposeCategoryForIntent(intent: unknown) {
+  const normalizedIntent = normalizeIntentName(intent);
+  if (normalizedIntent === "delivery") return 3;
+  if (normalizedIntent.includes("vendor")) return 5;
+  if (normalizedIntent.includes("cab")) return 2;
+  if (normalizedIntent.includes("member_staff") || normalizedIntent.includes("memberstaff")) return 6;
+  if (normalizedIntent.includes("staff")) return 4;
+  return 1;
+}
+
 function getMissingFieldsBeforePhoto(intent: unknown, collectedSlots: Record<string, string>) {
   const flow = inferActiveFlow(intent, collectedSlots);
   const missing: string[] = [];
@@ -177,6 +201,9 @@ function getMissingFieldsBeforePhoto(intent: unknown, collectedSlots: Record<str
     if (!isValidVisitorPhone(collectedSlots.phone || collectedSlots.visitor_phone || "")) {
       missing.push("phone");
     }
+    if (!hasMeaningfulValue(collectedSlots.came_from) && !hasMeaningfulValue(collectedSlots.origin)) {
+      missing.push("came_from");
+    }
     if (!hasMeaningfulValue(collectedSlots.meeting_with) && !hasMeaningfulValue(collectedSlots.person_to_meet)) {
       missing.push("meeting_with");
     }
@@ -210,6 +237,8 @@ function normalizeSlotName(input: unknown) {
     where_to_go: "meeting_with",
     unit: "meeting_with",
     unit_number: "meeting_with",
+    floor: "meeting_with",
+    floor_number: "meeting_with",
     flat: "meeting_with",
     flat_number: "meeting_with",
     recipient_person: "recipient_name",
@@ -350,6 +379,55 @@ function findPurposeCategoryMatch(value: unknown) {
   return null;
 }
 
+function findPurposeCategoryById(categoryId: number) {
+  if (!Number.isFinite(categoryId) || categoryId <= 0) {
+    return null;
+  }
+  return PURPOSE_CATALOG.data.find((category) => category.category_id === categoryId) || null;
+}
+
+function buildToolArgsSignature(name: string, args: unknown) {
+  const safeName = String(name || "").trim();
+  let serializedArgs = "";
+  try {
+    serializedArgs = JSON.stringify(args || {});
+  } catch {
+    serializedArgs = String(args || "");
+  }
+  return `${safeName}:${serializedArgs}`;
+}
+
+type ConversationState = {
+  intent?: string;
+  collectedSlots: Record<string, string>;
+};
+
+function cloneConversationState(state: ConversationState): ConversationState {
+  return {
+    intent: state.intent,
+    collectedSlots: {
+      ...(state.collectedSlots || {}),
+    },
+  };
+}
+
+function getPositiveInt(value: unknown) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return null;
+  const rounded = Math.trunc(parsed);
+  return rounded > 0 ? rounded : null;
+}
+
+function hasNotifiableMemberContact(member: Record<string, unknown>) {
+  const memberId =
+    getPositiveInt(member.member_id) ||
+    getPositiveInt(member.member_ids) ||
+    getPositiveInt(member.id);
+  const userId = String(member.user_id || member.member_old_sso_id || "").trim();
+  const mobile = String(member.member_mobile_number || member.mobile_number || "").replace(/\D/g, "");
+  return Boolean(memberId && userId && mobile.length >= 10);
+}
+
 function ReceptionistApp() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const avatarRef = useRef<Avatar3DRef>(null);
@@ -367,8 +445,16 @@ function ReceptionistApp() {
   const hasPersistedSecuritySnapshotRef = useRef(false);
   const captureInFlightRef = useRef(false);
   const lastCaptureErrorRef = useRef<string>("");
+  const autoConnectInFlightRef = useRef(false);
+  const lastAutoConnectAtRef = useRef(0);
+  const toolResponseCacheRef = useRef<Map<string, { at: number; result: any }>>(new Map());
+  const recentToolSignatureCacheRef = useRef<Map<string, { at: number; result: any }>>(new Map());
 
-  const { client, setConfig, setModel, connected, lipSyncRef, assistantAudioPlaying } = useLiveAPIContext();
+  const { client, setConfig, setModel, connected, lipSyncRef, assistantAudioPlaying: liveAssistantAudioPlaying, connect } = useLiveAPIContext();
+  const [localAvatarAudioPlaying, setLocalAvatarAudioPlaying] = useState(false);
+  const effectiveAssistantAudioPlaying = LOCAL_AVATAR_PIPELINE_ENABLED
+    ? localAvatarAudioPlaying
+    : liveAssistantAudioPlaying;
 
   // ── Gesture Controller ────────────────────────────────────────────
   const gestureControllerRef = useRef<GestureController | null>(null);
@@ -596,6 +682,38 @@ function ReceptionistApp() {
     return null;
   }, [describeCameraAccessError]);
 
+  const detectFaceInPreview = useCallback(async () => {
+    if (typeof window === "undefined") {
+      return { supported: false, detected: true };
+    }
+
+    const video = videoRef.current;
+    if (!video || video.videoWidth <= 0 || video.videoHeight <= 0) {
+      return { supported: false, detected: false };
+    }
+
+    const FaceDetectorCtor = (window as any).FaceDetector as
+      | (new (options?: { fastMode?: boolean; maxDetectedFaces?: number }) => {
+          detect: (input: CanvasImageSource) => Promise<unknown[]>;
+        })
+      | undefined;
+    if (!FaceDetectorCtor) {
+      // Browser does not support native face detection; allow capture fallback.
+      return { supported: false, detected: true };
+    }
+
+    try {
+      const detector = new FaceDetectorCtor({ fastMode: true, maxDetectedFaces: 1 });
+      const faces = await detector.detect(video);
+      return {
+        supported: true,
+        detected: Array.isArray(faces) && faces.length > 0,
+      };
+    } catch {
+      return { supported: true, detected: false };
+    }
+  }, []);
+
   const captureCheckInPhotoAfterCountdown = useCallback(async (source: string, countdownMs = 5000) => {
     if (captureInFlightRef.current) {
       return false;
@@ -619,6 +737,31 @@ function ReceptionistApp() {
       if (countdownMs > 0) {
         await sleep(countdownMs);
       }
+
+      let faceCheckSupported = false;
+      let faceDetected = false;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const faceCheck = await detectFaceInPreview();
+        faceCheckSupported = faceCheckSupported || faceCheck.supported;
+        if (faceCheck.detected) {
+          faceDetected = true;
+          break;
+        }
+        await sleep(300);
+      }
+      if (faceCheckSupported && !faceDetected) {
+        lastCaptureErrorRef.current =
+          "Face not detected clearly. Please face the camera and try again.";
+        if (activeSessionId) {
+          await DatabaseManager.logSessionEvent(activeSessionId, {
+            role: "system",
+            eventType: "camera_capture_blocked_no_face_detected",
+            content: lastCaptureErrorRef.current,
+          });
+        }
+        return false;
+      }
+
       const jpegDataUrl = await captureVisitorPhotoJpeg();
       if (!jpegDataUrl) {
         lastCaptureErrorRef.current =
@@ -660,7 +803,13 @@ function ReceptionistApp() {
       captureInFlightRef.current = false;
       stopCameraPreview();
     }
-  }, [captureVisitorPhotoJpeg, describeCameraAccessError, openTemporaryCameraStream, stopCameraPreview]);
+  }, [
+    captureVisitorPhotoJpeg,
+    describeCameraAccessError,
+    detectFaceInPreview,
+    openTemporaryCameraStream,
+    stopCameraPreview,
+  ]);
 
   const waitForCaptureSettled = useCallback(async (timeoutMs = 2500) => {
     const startedAt = Date.now();
@@ -704,23 +853,28 @@ function ReceptionistApp() {
   // ── Initial Configuration ─────────────────────────────────────────
   useEffect(() => {
     const modelId = "models/gemini-2.5-flash-native-audio-preview-12-2025";
+    const responseModalities = LOCAL_AVATAR_PIPELINE_ENABLED ? "TEXT" : "AUDIO";
     setModel(modelId);
 
-    setConfig({
+    const nextConfig: any = {
       model: modelId,
-      responseModalities: "AUDIO",
-      speechConfig: {
+      responseModalities,
+      systemInstruction: {
+        parts: [{ text: RECEPTIONIST_PERSONA.systemInstruction }],
+      },
+      tools: TOOLS,
+    };
+    if (!LOCAL_AVATAR_PIPELINE_ENABLED) {
+      nextConfig.speechConfig = {
         voiceConfig: {
           prebuiltVoiceConfig: {
             voiceName: "Algenib",
           },
         },
-      },
-      systemInstruction: {
-        parts: [{ text: RECEPTIONIST_PERSONA.systemInstruction }],
-      },
-      tools: TOOLS,
-    } as any);
+      };
+    }
+
+    setConfig(nextConfig);
   }, [setConfig, setModel]);
 
   // Best-effort landscape lock for kiosk devices that allow it.
@@ -735,12 +889,210 @@ function ReceptionistApp() {
     }
   }, []);
 
+  // ── Camera Person Detection Auto-Start ───────────────────────────
+  useEffect(() => {
+    if (!ENABLE_CAMERA_PERSON_DETECTION || connected || typeof window === "undefined") {
+      return;
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      return;
+    }
+
+    let cancelled = false;
+    let detectionTimer: ReturnType<typeof setTimeout> | null = null;
+    let detectionStream: MediaStream | null = null;
+    let detectionVideo: HTMLVideoElement | null = null;
+    let detectionCanvas: HTMLCanvasElement | null = null;
+    let previousLuma: Uint8ClampedArray | null = null;
+    let consecutiveDetections = 0;
+
+    const MOTION_THRESHOLD = 0.055;
+    const REQUIRED_DETECTIONS = 2;
+    const DETECTION_INTERVAL_MS = 700;
+    const AUTO_CONNECT_COOLDOWN_MS = 10000;
+
+    type FaceDetectorLike = { detect: (input: CanvasImageSource) => Promise<unknown[]> };
+    let faceDetector: FaceDetectorLike | null = null;
+    const FaceDetectorCtor = (window as any).FaceDetector as
+      | (new (options?: { fastMode?: boolean; maxDetectedFaces?: number }) => FaceDetectorLike)
+      | undefined;
+
+    if (FaceDetectorCtor) {
+      try {
+        faceDetector = new FaceDetectorCtor({ fastMode: true, maxDetectedFaces: 1 });
+      } catch {
+        faceDetector = null;
+      }
+    }
+
+    const stopDetection = () => {
+      if (detectionTimer) {
+        clearTimeout(detectionTimer);
+        detectionTimer = null;
+      }
+      if (detectionStream) {
+        detectionStream.getTracks().forEach((track) => track.stop());
+        detectionStream = null;
+      }
+      if (detectionVideo) {
+        detectionVideo.srcObject = null;
+        detectionVideo = null;
+      }
+      previousLuma = null;
+      consecutiveDetections = 0;
+    };
+
+    const detectMotion = () => {
+      if (!detectionVideo || detectionVideo.readyState < 2) {
+        return false;
+      }
+
+      if (!detectionCanvas) {
+        detectionCanvas = document.createElement("canvas");
+        detectionCanvas.width = 96;
+        detectionCanvas.height = 72;
+      }
+      const ctx = detectionCanvas.getContext("2d");
+      if (!ctx) {
+        return false;
+      }
+
+      ctx.drawImage(detectionVideo, 0, 0, detectionCanvas.width, detectionCanvas.height);
+      const frame = ctx.getImageData(0, 0, detectionCanvas.width, detectionCanvas.height).data;
+      const luma = new Uint8ClampedArray(detectionCanvas.width * detectionCanvas.height);
+
+      for (let pixel = 0, index = 0; pixel < frame.length; pixel += 4, index += 1) {
+        const red = frame[pixel];
+        const green = frame[pixel + 1];
+        const blue = frame[pixel + 2];
+        luma[index] = Math.round(red * 0.299 + green * 0.587 + blue * 0.114);
+      }
+
+      let motionDetected = false;
+      if (previousLuma) {
+        let diff = 0;
+        for (let i = 0; i < luma.length; i += 1) {
+          diff += Math.abs(luma[i] - previousLuma[i]);
+        }
+        const motionScore = diff / (luma.length * 255);
+        motionDetected = motionScore >= MOTION_THRESHOLD;
+      }
+
+      previousLuma = luma;
+      return motionDetected;
+    };
+
+    const scheduleNext = (delayMs = DETECTION_INTERVAL_MS) => {
+      if (cancelled) {
+        return;
+      }
+      if (detectionTimer) {
+        clearTimeout(detectionTimer);
+      }
+      detectionTimer = setTimeout(() => {
+        void detectPresenceTick();
+      }, delayMs);
+    };
+
+    const detectPresenceTick = async () => {
+      if (cancelled || connected) {
+        return;
+      }
+      if (!detectionVideo || detectionVideo.readyState < 2) {
+        scheduleNext(350);
+        return;
+      }
+
+      let personDetected = false;
+      if (faceDetector) {
+        try {
+          const faces = await faceDetector.detect(detectionVideo);
+          personDetected = Array.isArray(faces) && faces.length > 0;
+        } catch {
+          personDetected = false;
+        }
+      }
+      if (!personDetected) {
+        personDetected = detectMotion();
+      }
+
+      consecutiveDetections = personDetected
+        ? consecutiveDetections + 1
+        : Math.max(0, consecutiveDetections - 1);
+
+      if (consecutiveDetections >= REQUIRED_DETECTIONS) {
+        const now = Date.now();
+        const cooldownComplete = now - lastAutoConnectAtRef.current >= AUTO_CONNECT_COOLDOWN_MS;
+        if (!autoConnectInFlightRef.current && cooldownComplete) {
+          autoConnectInFlightRef.current = true;
+          lastAutoConnectAtRef.current = now;
+          stopDetection();
+          try {
+            await connect();
+          } catch (error) {
+            console.warn("Auto-connect from camera detection failed:", error);
+          } finally {
+            autoConnectInFlightRef.current = false;
+          }
+          return;
+        }
+      }
+
+      scheduleNext();
+    };
+
+    const startDetection = async () => {
+      try {
+        detectionStream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "user" },
+          audio: false,
+        });
+      } catch {
+        try {
+          detectionStream = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: false,
+          });
+        } catch (error) {
+          console.warn("Unable to start person-detection camera:", error);
+          if (!cancelled) {
+            detectionTimer = setTimeout(() => {
+              void startDetection();
+            }, 3000);
+          }
+          return;
+        }
+      }
+
+      detectionVideo = document.createElement("video");
+      detectionVideo.autoplay = true;
+      detectionVideo.muted = true;
+      detectionVideo.playsInline = true;
+      detectionVideo.srcObject = detectionStream;
+      try {
+        await detectionVideo.play();
+      } catch {
+        // On some browsers, autoplay may require interaction; frame loop will still retry.
+      }
+
+      scheduleNext(350);
+    };
+
+    void startDetection();
+
+    return () => {
+      cancelled = true;
+      stopDetection();
+    };
+  }, [connected, connect]);
+
   // ── Session Lifecycle (PostgreSQL backend) ───────────────────────
   useEffect(() => {
     let cancelled = false;
 
     if (connected) {
-      setConversationState({ collectedSlots: {} });
+      conversationStateRef.current = { collectedSlots: {} };
+      setConversationState(conversationStateRef.current);
       hasSavedVisitorRef.current = false;
       hasPersistedSecuritySnapshotRef.current = false;
       sessionPhotoRef.current = null;
@@ -753,7 +1105,8 @@ function ReceptionistApp() {
         }
       });
     } else {
-      setConversationState({ collectedSlots: {} });
+      conversationStateRef.current = { collectedSlots: {} };
+      setConversationState(conversationStateRef.current);
       lastLoggedAssistantTextRef.current = "";
       stopCameraPreview();
       const activeSessionId = sessionIdRef.current;
@@ -784,7 +1137,12 @@ function ReceptionistApp() {
     return () => {
       cancelled = true;
     };
-  }, [connected, persistSecuritySnapshotIfNeeded, stopCameraPreview, waitForCaptureSettled]);
+  }, [
+    connected,
+    persistSecuritySnapshotIfNeeded,
+    stopCameraPreview,
+    waitForCaptureSettled,
+  ]);
 
   // ── AUTO-GREETING ─────────────────────────────────────────────────
   useEffect(() => {
@@ -836,7 +1194,7 @@ function ReceptionistApp() {
       return;
     }
 
-    if (assistantAudioPlaying && !prev) {
+    if (effectiveAssistantAudioPlaying && !prev) {
       if (assistantPauseDebounceRef.current) {
         clearTimeout(assistantPauseDebounceRef.current);
         assistantPauseDebounceRef.current = null;
@@ -848,7 +1206,7 @@ function ReceptionistApp() {
       gestureControllerRef.current?.handleEvent({ type: 'audioStart' });
     }
 
-    if (!assistantAudioPlaying && prev) {
+    if (!effectiveAssistantAudioPlaying && prev) {
       if (assistantPauseDebounceRef.current) {
         clearTimeout(assistantPauseDebounceRef.current);
       }
@@ -865,8 +1223,8 @@ function ReceptionistApp() {
       }, 240);
     }
 
-    prevAssistantAudioPlayingRef.current = assistantAudioPlaying;
-  }, [assistantAudioPlaying, connected]);
+    prevAssistantAudioPlayingRef.current = effectiveAssistantAudioPlaying;
+  }, [connected, effectiveAssistantAudioPlaying]);
 
   // Strong interruption handling: immediately bring avatar back to listening.
   useEffect(() => {
@@ -938,12 +1296,28 @@ function ReceptionistApp() {
   }, [client]);
 
   // Conversation state for slot-filling
-  const [conversationState, setConversationState] = useState<{
-    intent?: string;
-    collectedSlots: Record<string, string>;
-  }>({
+  const [conversationState, setConversationState] = useState<ConversationState>({
     collectedSlots: {}
   });
+  const conversationStateRef = useRef<ConversationState>(cloneConversationState(conversationState));
+
+  const replaceConversationState = useCallback((nextState: ConversationState) => {
+    const cloned = cloneConversationState(nextState);
+    conversationStateRef.current = cloned;
+    setConversationState(cloned);
+    return cloned;
+  }, []);
+
+  const updateConversationState = useCallback((updater: (prev: ConversationState) => ConversationState) => {
+    const next = cloneConversationState(updater(cloneConversationState(conversationStateRef.current)));
+    conversationStateRef.current = next;
+    setConversationState(next);
+    return next;
+  }, []);
+
+  useEffect(() => {
+    conversationStateRef.current = cloneConversationState(conversationState);
+  }, [conversationState]);
 
   // ── Handle Tool Calls ─────────────────────────────────────────────
   useEffect(() => {
@@ -954,7 +1328,53 @@ function ReceptionistApp() {
       for (const fc of toolCall.functionCalls) {
         let result: any = { error: "Unknown tool" };
         const { name, args } = fc;
+        const functionCallId = String(fc?.id || "").trim();
+        const dedupeBySignatureEligible =
+          name === "classify_intent" ||
+          name === "collect_slot_value" ||
+          name === "check_returning_visitor";
+        const toolArgsSignature = dedupeBySignatureEligible
+          ? buildToolArgsSignature(name, args)
+          : "";
         const activeSessionId = sessionIdRef.current;
+        const now = Date.now();
+
+        // Keep caches bounded and fresh.
+        for (const [cacheKey, cacheValue] of toolResponseCacheRef.current.entries()) {
+          if (now - cacheValue.at > 2 * 60 * 1000) {
+            toolResponseCacheRef.current.delete(cacheKey);
+          }
+        }
+        for (const [cacheKey, cacheValue] of recentToolSignatureCacheRef.current.entries()) {
+          if (now - cacheValue.at > TOOL_SIGNATURE_CACHE_TTL_MS) {
+            recentToolSignatureCacheRef.current.delete(cacheKey);
+          }
+        }
+
+        if (functionCallId) {
+          const cachedByCallId = toolResponseCacheRef.current.get(functionCallId);
+          if (cachedByCallId) {
+            // Same function call id already handled; ignore duplicate event delivery.
+            continue;
+          }
+        }
+        if (toolArgsSignature) {
+          const cachedBySignature = recentToolSignatureCacheRef.current.get(toolArgsSignature);
+          if (cachedBySignature) {
+            if (functionCallId) {
+              toolResponseCacheRef.current.set(functionCallId, {
+                at: now,
+                result: cachedBySignature.result,
+              });
+            }
+            responses.push({
+              name,
+              id: fc.id,
+              response: { result: cachedBySignature.result },
+            });
+            continue;
+          }
+        }
 
         if (activeSessionId) {
           void DatabaseManager.logSessionEvent(activeSessionId, {
@@ -967,7 +1387,7 @@ function ReceptionistApp() {
         try {
           if (name === "classify_intent") {
             const normalizedIntent = normalizeIntentName(args.detected_intent);
-            setConversationState(prev => ({
+            updateConversationState((prev) => ({
               ...prev,
               intent: normalizedIntent
             }));
@@ -1009,9 +1429,44 @@ function ReceptionistApp() {
                   "This field is not required. Collect only the active flow details before photo capture.",
               };
             } else {
+            const activeFlow = inferActiveFlow(conversationStateRef.current.intent, conversationStateRef.current.collectedSlots);
+            const nameAlreadyCollected = hasMeaningfulValue(
+              conversationStateRef.current.collectedSlots.visitor_name ||
+              conversationStateRef.current.collectedSlots.name ||
+              ""
+            );
+            const phoneAlreadyCollected = isValidVisitorPhone(
+              conversationStateRef.current.collectedSlots.phone ||
+              conversationStateRef.current.collectedSlots.visitor_phone ||
+              ""
+            );
+            const cameFromAlreadyCollected = hasMeaningfulValue(
+              conversationStateRef.current.collectedSlots.came_from ||
+              conversationStateRef.current.collectedSlots.origin ||
+              ""
+            );
+            if (slotName === "phone" && activeFlow === "visitor" && !nameAlreadyCollected) {
+              result = {
+                status: "need_more_info",
+                missing_fields: ["name"],
+                message: "Collect visitor name first, then ask for phone number.",
+              };
+            } else if (slotName === "came_from" && activeFlow === "visitor" && !phoneAlreadyCollected) {
+              result = {
+                status: "need_more_info",
+                missing_fields: ["phone"],
+                message: "Collect visitor phone number before asking where they came from.",
+              };
+            } else if (slotName === "meeting_with" && activeFlow === "visitor" && !cameFromAlreadyCollected) {
+              result = {
+                status: "need_more_info",
+                missing_fields: ["came_from"],
+                message: "Collect where the visitor came from before asking whom they want to meet.",
+              };
+            } else {
             const isDeliverySlotName = ["delivery_company", "recipient_company", "recipient_name"].includes(slotName);
             const rawSlotValue = String(args.value || "").trim();
-            const existingSlotValue = String(conversationState.collectedSlots[slotName] || "").trim();
+            const existingSlotValue = String(conversationStateRef.current.collectedSlots[slotName] || "").trim();
             const slotValue = mergeCollectedSlotValue(slotName, rawSlotValue, existingSlotValue);
             const phoneDigitsCollected = slotName === "phone" ? toPhoneDigits(slotValue).length : 0;
             const phoneNeedsMoreDigits = slotName === "phone" && phoneDigitsCollected > 0 && phoneDigitsCollected < 10;
@@ -1030,10 +1485,10 @@ function ReceptionistApp() {
               "recipient_name",
             ].includes(slotName);
             const memberLookupQueryContext =
-              conversationState.collectedSlots.recipient_company ||
-              conversationState.collectedSlots.target_company ||
-              conversationState.collectedSlots.came_from ||
-              conversationState.collectedSlots.company ||
+              conversationStateRef.current.collectedSlots.recipient_company ||
+              conversationStateRef.current.collectedSlots.target_company ||
+              conversationStateRef.current.collectedSlots.came_from ||
+              conversationStateRef.current.collectedSlots.company ||
               "";
             const memberLookup = shouldResolveMemberDestination && hasMeaningfulValue(slotValue)
               ? await resolveMembersForDestination(slotValue, {
@@ -1049,14 +1504,34 @@ function ReceptionistApp() {
               ["meeting_with", "recipient_name"].includes(slotName) &&
               !!memberLookup &&
               (!memberLookup.ok || matchedMemberIds.length === 0);
+            const isVisitorDestinationSlot = slotName === "meeting_with";
+            const isDeliveryRecipientSlot = slotName === "recipient_name";
             const shouldPromptForUnitNumber =
-              slotName === "meeting_with" &&
+              isVisitorDestinationSlot &&
               !!memberLookup &&
               memberLookup.configured &&
               memberLookup.ok &&
               matchedMemberIds.length === 0;
+            const shouldPromptForDestinationClarification =
+              isVisitorDestinationSlot &&
+              !!memberLookup &&
+              memberLookup.configured &&
+              memberLookup.ok &&
+              matchedMemberIds.length > 1;
+            const shouldPromptForRecipientLocation =
+              isDeliveryRecipientSlot &&
+              !!memberLookup &&
+              memberLookup.configured &&
+              memberLookup.ok &&
+              matchedMemberIds.length === 0;
+            const shouldPromptForRecipientClarification =
+              isDeliveryRecipientSlot &&
+              !!memberLookup &&
+              memberLookup.configured &&
+              memberLookup.ok &&
+              matchedMemberIds.length > 1;
 
-            setConversationState(prev => ({
+            updateConversationState((prev) => ({
               ...prev,
               ...(isDeliverySlotName ? { intent: "delivery" } : {}),
               collectedSlots: {
@@ -1152,66 +1627,91 @@ function ReceptionistApp() {
                   }
                 : {}),
             };
-            if (shouldPromptForUnitNumber) {
+            if (shouldPromptForDestinationClarification) {
+              result = {
+                ...result,
+                status: "need_more_info",
+                missing_fields: ["meeting_with"],
+                message:
+                  "I found multiple matches. Could you specify the floor or unit number?",
+              };
+            } else if (shouldPromptForRecipientClarification) {
+              result = {
+                ...result,
+                status: "need_more_info",
+                missing_fields: ["recipient_name"],
+                message:
+                  "I found multiple matches. Could you specify the floor or office number?",
+              };
+            } else if (shouldPromptForUnitNumber) {
               result = {
                 ...result,
                 status: "need_more_info",
                 missing_fields: ["unit_number"],
                 message:
-                  "Sorry, I am not able to find that member. Could you specify the unit number?",
+                  "Sorry, I am not able to find that member. Could you specify the floor or unit number?",
               };
+            } else if (shouldPromptForRecipientLocation) {
+              result = {
+                ...result,
+                status: "need_more_info",
+                missing_fields: ["recipient_name"],
+                message:
+                  "Sorry, I am not able to find that recipient. Could you specify the floor or office number?",
+              };
+            }
             }
             }
           }
           else if (name === "save_visitor_info") {
             const resolvedIntent = normalizeIntentName(
-              args.intent || conversationState.intent || "meet_person"
+              args.intent || conversationStateRef.current.intent || "meet_person"
             );
             const isDeliveryIntent = resolvedIntent === "delivery";
             const resolvedName =
               args.name ||
-              conversationState.collectedSlots.visitor_name ||
-              conversationState.collectedSlots.name ||
+              conversationStateRef.current.collectedSlots.visitor_name ||
+              conversationStateRef.current.collectedSlots.name ||
               "Visitor";
             const resolvedPhone =
               args.phone ||
-              conversationState.collectedSlots.phone ||
-              conversationState.collectedSlots.visitor_phone ||
+              conversationStateRef.current.collectedSlots.phone ||
+              conversationStateRef.current.collectedSlots.visitor_phone ||
               "N/A";
             const normalizedPhone = toPhoneDigits(resolvedPhone);
             const resolvedMeetingWith =
               args.meeting_with ||
-              conversationState.collectedSlots.meeting_with ||
-              conversationState.collectedSlots.person_to_meet ||
-              conversationState.collectedSlots.recipient_name ||
-              conversationState.collectedSlots.whom_to_meet ||
+              conversationStateRef.current.collectedSlots.meeting_with ||
+              conversationStateRef.current.collectedSlots.person_to_meet ||
+              conversationStateRef.current.collectedSlots.recipient_name ||
+              conversationStateRef.current.collectedSlots.whom_to_meet ||
               "N/A";
             const resolvedDeliveryCompany =
               args.delivery_company ||
-              conversationState.collectedSlots.delivery_company ||
-              conversationState.collectedSlots.delivery_partner ||
+              conversationStateRef.current.collectedSlots.delivery_company ||
+              conversationStateRef.current.collectedSlots.delivery_partner ||
               args.company ||
-              conversationState.collectedSlots.company ||
+              conversationStateRef.current.collectedSlots.company ||
               "";
             const resolvedRecipientCompany =
               args.recipient_company ||
-              conversationState.collectedSlots.recipient_company ||
-              conversationState.collectedSlots.target_company ||
-              conversationState.collectedSlots.department ||
+              conversationStateRef.current.collectedSlots.recipient_company ||
+              conversationStateRef.current.collectedSlots.target_company ||
+              conversationStateRef.current.collectedSlots.department ||
               "";
             const resolvedRecipientName =
               args.recipient_name ||
-              conversationState.collectedSlots.recipient_name ||
-              conversationState.collectedSlots.person_to_meet ||
-              conversationState.collectedSlots.recipient ||
-              conversationState.collectedSlots.meeting_with ||
+              conversationStateRef.current.collectedSlots.recipient_name ||
+              conversationStateRef.current.collectedSlots.person_to_meet ||
+              conversationStateRef.current.collectedSlots.recipient ||
+              conversationStateRef.current.collectedSlots.meeting_with ||
               "";
             const resolvedCameFrom =
               args.came_from ||
               args.company ||
-              conversationState.collectedSlots.came_from ||
-              conversationState.collectedSlots.origin ||
-              conversationState.collectedSlots.company ||
+              conversationStateRef.current.collectedSlots.came_from ||
+              conversationStateRef.current.collectedSlots.origin ||
+              conversationStateRef.current.collectedSlots.company ||
               "Walk-in";
             const finalMeetingWith = isDeliveryIntent
               ? String(resolvedRecipientName || resolvedMeetingWith || "N/A").trim()
@@ -1221,50 +1721,74 @@ function ReceptionistApp() {
               : String(resolvedCameFrom || "Walk-in").trim();
             const resolvedPurpose =
               args.purpose ||
-              conversationState.collectedSlots.purpose ||
+              conversationStateRef.current.collectedSlots.purpose ||
               "";
+            const mappedPurposeCategoryId = Number(
+              args.purpose_category_id ||
+              conversationStateRef.current.collectedSlots.purpose_category_id ||
+              ""
+            );
             const resolvedPurposeSubCategoryId = Number(
-              conversationState.collectedSlots.purpose_sub_category_id || ""
+              args.purpose_sub_category_id ||
+              conversationStateRef.current.collectedSlots.purpose_sub_category_id ||
+              ""
             );
             const resolvedPurposeSubCategoryName =
-              conversationState.collectedSlots.purpose_sub_category_name || "";
-            const finalPurposeCategoryId = resolvedIntent === "delivery" ? 3 : 1;
+              String(
+                args.purpose_sub_category_name ||
+                conversationStateRef.current.collectedSlots.purpose_sub_category_name ||
+                ""
+              ).trim();
+            const fallbackPurposeCategoryId = defaultPurposeCategoryForIntent(resolvedIntent);
+            const finalPurposeCategoryId =
+              Number.isFinite(mappedPurposeCategoryId) && mappedPurposeCategoryId > 0
+                ? mappedPurposeCategoryId
+                : fallbackPurposeCategoryId;
+            const mappedPurposeCategoryName =
+              String(
+                args.purpose_category_name ||
+                conversationStateRef.current.collectedSlots.purpose_category_name ||
+                ""
+              ).trim();
             const finalPurposeCategoryName =
-              resolvedIntent === "delivery" ? "DELIVERY" : "GUEST";
+              mappedPurposeCategoryName ||
+              findPurposeCategoryById(finalPurposeCategoryId)?.category_name ||
+              findPurposeCategoryById(defaultPurposeCategoryForIntent(resolvedIntent))?.category_name ||
+              (finalPurposeCategoryId === 3 ? "DELIVERY" : "GUEST");
             const resolvedWhereToGo =
               args.where_to_go ||
-              conversationState.collectedSlots.where_to_go ||
+              conversationStateRef.current.collectedSlots.where_to_go ||
               "";
             const resolvedApprovalDecision = String(
               args.approval_decision ||
-              conversationState.collectedSlots.approval_decision ||
+              conversationStateRef.current.collectedSlots.approval_decision ||
               ""
             )
               .trim()
               .toLowerCase();
             const resolvedApprovalStatus = String(
               args.approval_status ||
-              conversationState.collectedSlots.approval_status ||
+              conversationStateRef.current.collectedSlots.approval_status ||
               ""
             )
               .trim()
               .toLowerCase();
             const resolvedApprovalSource = String(
-              conversationState.collectedSlots.approval_source || ""
+              conversationStateRef.current.collectedSlots.approval_source || ""
             ).trim();
             let resolvedMemberIdsCsv =
               String(
-                conversationState.collectedSlots.member_ids ||
+                conversationStateRef.current.collectedSlots.member_ids ||
                 ""
               ).trim();
             let resolvedMemberLookupQuery =
               String(
-                conversationState.collectedSlots.member_lookup_query ||
+                conversationStateRef.current.collectedSlots.member_lookup_query ||
                 ""
               ).trim();
             let resolvedMemberObjectsEncoded =
               String(
-                conversationState.collectedSlots.member_objects_uri ||
+                conversationStateRef.current.collectedSlots.member_objects_uri ||
                 ""
               ).trim();
             let resolvedMemberObjects = resolvedMemberObjectsEncoded
@@ -1315,7 +1839,7 @@ function ReceptionistApp() {
                 resolvedMemberObjects = memberLookup.matchedMembers;
                 resolvedMemberObjectsEncoded = encodeMembersForNotes(memberLookup.matchedMembers);
 
-                setConversationState((prev) => ({
+                updateConversationState((prev) => ({
                   ...prev,
                   collectedSlots: {
                     ...prev.collectedSlots,
@@ -1362,6 +1886,24 @@ function ReceptionistApp() {
                 .filter(Boolean)
                 .join(" | ");
             const missingFields: string[] = [];
+              const uniqueResolvedMemberIds = Array.from(
+                new Set(
+                  resolvedMemberObjects
+                    .map((member) =>
+                      getPositiveInt(
+                        (member as Record<string, unknown>).member_id ||
+                          (member as Record<string, unknown>).member_ids
+                      )
+                    )
+                    .filter((value): value is number => Number.isFinite(value))
+                )
+              );
+              const hasResolvedMember = uniqueResolvedMemberIds.length > 0 && resolvedMemberObjects.length > 0;
+              const hasAmbiguousMemberMatches =
+                resolvedMemberObjects.length > 1 || uniqueResolvedMemberIds.length > 1;
+              const hasNotifiableMember = resolvedMemberObjects.some((member) =>
+                hasNotifiableMemberContact(member as Record<string, unknown>)
+              );
               if (!hasMeaningfulValue(resolvedName) || String(resolvedName).trim().toLowerCase() === "visitor") {
                 missingFields.push("name");
               }
@@ -1379,6 +1921,9 @@ function ReceptionistApp() {
                 if (!isValidVisitorPhone(resolvedPhone)) {
                   missingFields.push("phone");
                 }
+                if (!hasMeaningfulValue(resolvedCameFrom)) {
+                  missingFields.push("came_from");
+                }
                 if (!hasMeaningfulValue(resolvedMeetingWith)) {
                   missingFields.push("meeting_with");
                 }
@@ -1391,7 +1936,7 @@ function ReceptionistApp() {
                   message:
                     isDeliveryIntent
                       ? "Collect delivery person name, delivery company, recipient company, and recipient name before saving."
-                      : "Collect name, phone, and whom they want to visit before saving. Ask one missing field at a time.",
+                      : "Collect name, phone, where they came from, and whom they want to visit before saving. Ask one missing field at a time.",
                 };
               } else if (!visitorCheckInPhotoRef.current) {
                 result = {
@@ -1402,18 +1947,38 @@ function ReceptionistApp() {
                       ? "Ask the delivery person to stand still for 5 seconds, call capture_photo, then save_visitor_info again."
                       : "Ask the visitor to stand still for 5 seconds, call capture_photo, then save_visitor_info again.",
                 };
-              } else if (!isDeliveryIntent && (!resolvedMemberIdsCsv || resolvedMemberObjects.length === 0)) {
+              } else if (!hasResolvedMember) {
                 result = {
                   status: "need_more_info",
-                  missing_fields: ["unit_number"],
+                  missing_fields: [isDeliveryIntent ? "recipient_name" : "unit_number"],
                   message:
-                    "Sorry, I am not able to find that member. Could you specify the unit number?",
+                    isDeliveryIntent
+                      ? "Sorry, I am not able to find that recipient. Could you specify the floor or office number?"
+                      : "Sorry, I am not able to find that member. Could you specify the floor or unit number?",
+                };
+              } else if (hasAmbiguousMemberMatches) {
+                result = {
+                  status: "need_more_info",
+                  missing_fields: [isDeliveryIntent ? "recipient_name" : "meeting_with"],
+                  message:
+                    isDeliveryIntent
+                      ? "I found multiple recipient matches. Could you specify the floor or office number?"
+                      : "I found multiple matches. Could you specify the floor or unit number?",
+                };
+              } else if (!hasNotifiableMember) {
+                result = {
+                  status: "need_more_info",
+                  missing_fields: [isDeliveryIntent ? "recipient_name" : "meeting_with"],
+                  message:
+                    isDeliveryIntent
+                      ? "I found the recipient but their contact details are incomplete. Could you confirm the floor or office number?"
+                      : "I found the member but contact details are incomplete. Could you confirm the floor or unit number?",
                 };
               } else {
                 const finalVisitorPhoto = visitorCheckInPhotoRef.current || args.photo || undefined;
                 const resolvedDepartment = String(
                   args.department ||
-                  conversationState.collectedSlots.department ||
+                  conversationStateRef.current.collectedSlots.department ||
                   "Reception"
                 ).trim() || "Reception";
                 const finalPhone = isDeliveryIntent
@@ -1481,6 +2046,7 @@ function ReceptionistApp() {
                     companyId: Number.isFinite(configuredCompanyId) && configuredCompanyId > 0
                       ? configuredCompanyId
                       : undefined,
+                    companyName: isDeliveryIntent ? finalCompany : undefined,
                     isStaff: false,
                   });
 
@@ -1495,10 +2061,59 @@ function ReceptionistApp() {
               }
           }
           else if (name === "check_returning_visitor") {
-            const visitor = await DatabaseManager.findByPhone(args.phone);
-            result = visitor
-              ? { is_returning: true, last_visit: visitor.timestamp, name: visitor.name }
-              : { is_returning: false };
+            const phoneInput = String(args.phone || "").trim();
+            const gateSearch = await searchVisitorByPhoneInGate(phoneInput);
+
+            if (gateSearch.configured && gateSearch.ok) {
+              let resolvedName = String(gateSearch.visitorName || "").trim();
+              if (gateSearch.found && !hasMeaningfulValue(resolvedName)) {
+                const localFallback = await DatabaseManager.findByPhone(phoneInput);
+                resolvedName = String(localFallback?.name || "").trim();
+              }
+
+              if (gateSearch.found && hasMeaningfulValue(resolvedName)) {
+                updateConversationState((prev) => ({
+                  ...prev,
+                  collectedSlots: {
+                    ...prev.collectedSlots,
+                    visitor_name: resolvedName,
+                  },
+                }));
+              }
+
+              result = {
+                is_returning: gateSearch.found,
+                name: resolvedName || null,
+                visitor_id: gateSearch.visitorId ?? null,
+                skip_name_prompt: gateSearch.found && hasMeaningfulValue(resolvedName),
+                source: "gate_api",
+              };
+            } else {
+              const visitor = await DatabaseManager.findByPhone(phoneInput);
+              if (visitor) {
+                updateConversationState((prev) => ({
+                  ...prev,
+                  collectedSlots: {
+                    ...prev.collectedSlots,
+                    visitor_name: visitor.name,
+                  },
+                }));
+                result = {
+                  is_returning: true,
+                  last_visit: visitor.timestamp,
+                  name: visitor.name,
+                  skip_name_prompt: true,
+                  source: "local_fallback",
+                  gate_search_error: gateSearch.error || "Gate visitor search failed",
+                };
+              } else {
+                result = {
+                  is_returning: false,
+                  source: "local_fallback",
+                  gate_search_error: gateSearch.error || "Gate visitor search failed",
+                };
+              }
+            }
           }
           else if (name === "route_to_department") {
             setExpressionCue("explaining_confident");
@@ -1511,7 +2126,7 @@ function ReceptionistApp() {
           }
           else if (name === "request_approval") {
             await new Promise((resolve) => setTimeout(resolve, 350));
-            setConversationState((prev) => ({
+            updateConversationState((prev) => ({
               ...prev,
               collectedSlots: {
                 ...prev.collectedSlots,
@@ -1535,44 +2150,44 @@ function ReceptionistApp() {
             const resolvedDeliveryCompany =
               String(
                 args.delivery_company ||
-                conversationState.collectedSlots.delivery_company ||
-                conversationState.collectedSlots.delivery_partner ||
-                conversationState.collectedSlots.company ||
+                conversationStateRef.current.collectedSlots.delivery_company ||
+                conversationStateRef.current.collectedSlots.delivery_partner ||
+                conversationStateRef.current.collectedSlots.company ||
                 ""
               ).trim();
             const resolvedRecipientCompany =
               String(
                 args.recipient_company ||
-                conversationState.collectedSlots.recipient_company ||
-                conversationState.collectedSlots.target_company ||
-                conversationState.collectedSlots.department ||
+                conversationStateRef.current.collectedSlots.recipient_company ||
+                conversationStateRef.current.collectedSlots.target_company ||
+                conversationStateRef.current.collectedSlots.department ||
                 ""
               ).trim();
             const resolvedRecipientName =
               String(
                 args.recipient_name ||
-                conversationState.collectedSlots.recipient_name ||
-                conversationState.collectedSlots.person_to_meet ||
-                conversationState.collectedSlots.recipient ||
-                conversationState.collectedSlots.meeting_with ||
+                conversationStateRef.current.collectedSlots.recipient_name ||
+                conversationStateRef.current.collectedSlots.person_to_meet ||
+                conversationStateRef.current.collectedSlots.recipient ||
+                conversationStateRef.current.collectedSlots.meeting_with ||
                 ""
               ).trim();
             const resolvedTrackingNumber =
               String(
                 args.tracking_number ||
-                conversationState.collectedSlots.reference_id ||
+                conversationStateRef.current.collectedSlots.reference_id ||
                 ""
               ).trim();
             const resolvedParcelDescription =
               String(
                 args.parcel_description ||
-                conversationState.collectedSlots.purpose ||
+                conversationStateRef.current.collectedSlots.purpose ||
                 "Parcel delivery"
               ).trim();
             const resolvedDeliveryPersonName =
               String(
                 args.delivery_person_name ||
-                conversationState.collectedSlots.visitor_name ||
+                conversationStateRef.current.collectedSlots.visitor_name ||
                 ""
               ).trim();
 
@@ -1624,7 +2239,7 @@ function ReceptionistApp() {
                 });
               }
 
-              setConversationState((prev) => ({
+              updateConversationState((prev) => ({
                 ...prev,
                 collectedSlots: {
                   ...prev.collectedSlots,
@@ -1654,7 +2269,7 @@ function ReceptionistApp() {
           }
           else if (name === "notify_staff") {
             await new Promise((resolve) => setTimeout(resolve, 500));
-            setConversationState((prev) => ({
+            updateConversationState((prev) => ({
               ...prev,
               collectedSlots: {
                 ...prev.collectedSlots,
@@ -1675,25 +2290,25 @@ function ReceptionistApp() {
             const resolvedDeliveryCompany =
               String(
                 args.company ||
-                conversationState.collectedSlots.delivery_company ||
-                conversationState.collectedSlots.delivery_partner ||
-                conversationState.collectedSlots.company ||
+                conversationStateRef.current.collectedSlots.delivery_company ||
+                conversationStateRef.current.collectedSlots.delivery_partner ||
+                conversationStateRef.current.collectedSlots.company ||
                 "Delivery"
               ).trim();
             const resolvedRecipientCompany =
               String(
                 args.recipient_company ||
-                conversationState.collectedSlots.recipient_company ||
-                conversationState.collectedSlots.target_company ||
-                conversationState.collectedSlots.department ||
+                conversationStateRef.current.collectedSlots.recipient_company ||
+                conversationStateRef.current.collectedSlots.target_company ||
+                conversationStateRef.current.collectedSlots.department ||
                 "Greenscape"
               ).trim();
             const resolvedRecipient =
               String(
                 args.recipient ||
-                conversationState.collectedSlots.recipient_name ||
-                conversationState.collectedSlots.meeting_with ||
-                conversationState.collectedSlots.recipient ||
+                conversationStateRef.current.collectedSlots.recipient_name ||
+                conversationStateRef.current.collectedSlots.meeting_with ||
+                conversationStateRef.current.collectedSlots.recipient ||
                 "N/A"
               ).trim();
             const resolvedDepartment = resolvedRecipientCompany || "Delivery";
@@ -1725,13 +2340,13 @@ function ReceptionistApp() {
             };
           }
           else if (name === "end_interaction") {
-            const hasCollectedAnySlot = Object.values(conversationState.collectedSlots).some(
+            const hasCollectedAnySlot = Object.values(conversationStateRef.current.collectedSlots).some(
               (value) => hasMeaningfulValue(value)
             );
             if (!hasSavedVisitorRef.current && hasCollectedAnySlot) {
               const readiness = getMissingFieldsBeforePhoto(
-                conversationState.intent,
-                conversationState.collectedSlots
+                conversationStateRef.current.intent,
+                conversationStateRef.current.collectedSlots
               );
               const pending = [...readiness.missing];
               if (!visitorCheckInPhotoRef.current) {
@@ -1739,7 +2354,7 @@ function ReceptionistApp() {
               }
               if (
                 readiness.flow === "delivery" &&
-                !hasMeaningfulValue(conversationState.collectedSlots.approval_decision)
+                !hasMeaningfulValue(conversationStateRef.current.collectedSlots.approval_decision)
               ) {
                 pending.push("delivery_approval");
               }
@@ -1781,7 +2396,7 @@ function ReceptionistApp() {
                 stopCameraPreview();
                 client.disconnect();
                 setVideoStream(null);
-                setConversationState({ collectedSlots: {} });
+                replaceConversationState({ collectedSlots: {} });
                 visitorCheckInPhotoRef.current = null;
                 setLastAudioText("");
                 setExpressionCue("neutral_professional");
@@ -1791,8 +2406,8 @@ function ReceptionistApp() {
           }
           else if (name === "capture_photo") {
             const photoReadiness = getMissingFieldsBeforePhoto(
-              conversationState.intent,
-              conversationState.collectedSlots
+              conversationStateRef.current.intent,
+              conversationStateRef.current.collectedSlots
             );
             if (photoReadiness.missing.length > 0) {
               if (activeSessionId) {
@@ -1802,7 +2417,7 @@ function ReceptionistApp() {
                   content: JSON.stringify({
                     flow: photoReadiness.flow,
                     missing_fields: photoReadiness.missing,
-                    intent: conversationState.intent || "",
+                    intent: conversationStateRef.current.intent || "",
                   }),
                 });
               }
@@ -1813,7 +2428,7 @@ function ReceptionistApp() {
                 message:
                   photoReadiness.flow === "delivery"
                     ? "Collect delivery person name, delivery company, recipient company, and recipient name before photo capture."
-                    : "Collect name, phone, and whom they want to visit before photo capture.",
+                    : "Collect name, phone, where they came from, and whom they want to visit before photo capture.",
               };
             } else {
               const captured = await captureCheckInPhotoAfterCountdown("tool_call_after_5s_still_pose", 5000);
@@ -1835,6 +2450,19 @@ function ReceptionistApp() {
           }
         } catch (e: any) {
           result = { error: e.message };
+        }
+
+        if (toolArgsSignature) {
+          recentToolSignatureCacheRef.current.set(toolArgsSignature, {
+            at: Date.now(),
+            result,
+          });
+        }
+        if (functionCallId) {
+          toolResponseCacheRef.current.set(functionCallId, {
+            at: Date.now(),
+            result,
+          });
         }
 
         responses.push({
@@ -1860,7 +2488,16 @@ function ReceptionistApp() {
     return () => {
       client.off("toolcall", onToolCall);
     };
-  }, [client, connected, conversationState, fireGesture, captureCheckInPhotoAfterCountdown, persistSecuritySnapshotIfNeeded, stopCameraPreview]);
+  }, [
+    captureCheckInPhotoAfterCountdown,
+    client,
+    connected,
+    fireGesture,
+    persistSecuritySnapshotIfNeeded,
+    replaceConversationState,
+    stopCameraPreview,
+    updateConversationState,
+  ]);
 
   return (
     <div className="app-container">
@@ -1869,13 +2506,15 @@ function ReceptionistApp() {
           <h1 className="app-title">Greenscape Receptionist</h1>
 
           <div className="avatar-wrapper">
-            <Avatar3D
+            <AvatarController
               ref={avatarRef}
+              mode={AVATAR_PIPELINE_MODE}
               connected={connected}
               speechText={lastAudioText}
               expressionCue={expressionCue}
-              isAudioPlaying={assistantAudioPlaying}
+              isAudioPlaying={effectiveAssistantAudioPlaying}
               lipSyncRef={lipSyncRef}
+              onLocalPlaybackStateChange={setLocalAvatarAudioPlaying}
             />
           </div>
 

@@ -150,6 +150,57 @@ Notes:
 
 ---
 
+## 🎭 Avatar Phase 1 (Self-Hosted TTS + Lip Sync)
+
+Phase 1 is implemented as a feature-flagged pipeline and does not replace the current working flow by default.
+
+### 1) Start Python avatar backend
+
+```bash
+cd avatar-backend-python
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env
+uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
+```
+
+### 2) Enable local avatar pipeline in frontend
+
+In `receptionist-react/.env.local`:
+
+```env
+REACT_APP_AVATAR_PIPELINE_MODE=local
+REACT_APP_AVATAR_BACKEND_URL=http://localhost:8001
+REACT_APP_AVATAR_RENDER_ADAPTER=three_d
+```
+
+Then restart frontend:
+
+```bash
+cd receptionist-react
+npm start
+```
+
+### 3) Keep current behavior (safe default)
+
+```env
+REACT_APP_AVATAR_PIPELINE_MODE=legacy
+```
+
+This keeps the existing Gemini streamed-audio avatar pipeline unchanged.
+
+### Troubleshooting
+
+- If local synthesis fails with Piper errors: configure `AVATAR_BACKEND_PIPER_MODEL` and `AVATAR_BACKEND_PIPER_BINARY`.
+- If lip cues fail: configure `AVATAR_BACKEND_RHUBARB_BINARY`.
+- For dry-run/local wiring only, set:
+  - `AVATAR_BACKEND_TTS_PROVIDER=dummy`
+  - `AVATAR_BACKEND_LIPSYNC_PROVIDER=none`
+- If the browser blocks audio autoplay, start interaction from a user click (`Connect`).
+
+---
+
 ## 🏗 Repository Structure
 
 - `receptionist-react/`: The main React application powered by Gemini Multimodal Live API.

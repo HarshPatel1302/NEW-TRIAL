@@ -20,18 +20,33 @@ export const TOOLS: Tool[] = [
             },
             {
                 name: "collect_slot_value",
-                description: "Record one collected field. For visitor flow use visitor_name, phone, meeting_with. For delivery flow use visitor_name, delivery_company, recipient_company, recipient_name.",
+                description: "Record one collected field. For visitor flow use visitor_name, phone, came_from, meeting_with. For delivery flow use visitor_name, delivery_company, recipient_company, recipient_name.",
                 parameters: {
                     type: "OBJECT",
                     properties: {
                         slot_name: {
                             type: "STRING",
                             description:
-                                "Use one of: visitor_name, phone, meeting_with, delivery_company, recipient_company, recipient_name."
+                                "Use one of: visitor_name, phone, came_from, meeting_with, delivery_company, recipient_company, recipient_name."
                         },
                         value: { type: "STRING", description: "The value provided by the visitor" }
                     },
                     required: ["slot_name", "value"]
+                } as any
+            },
+            {
+                name: "check_returning_visitor",
+                description:
+                    "Check visitor by phone to enrich/verify records. If found and visitor_name is missing, reuse returned name.",
+                parameters: {
+                    type: "OBJECT",
+                    properties: {
+                        phone: {
+                            type: "STRING",
+                            description: "Visitor phone number (10+ digits preferred)."
+                        }
+                    },
+                    required: ["phone"]
                 } as any
             },
             {
@@ -71,7 +86,10 @@ export const TOOLS: Tool[] = [
                     properties: {
                         name: { type: "STRING", description: "Visitor's full name" },
                         phone: { type: "STRING", description: "Visitor's phone number" },
-                        meeting_with: { type: "STRING", description: "Name of the person they want to meet, or a flat/unit number like 1904" },
+                        meeting_with: {
+                            type: "STRING",
+                            description: "Name of the person they want to meet, or a floor/flat/office number like 1904"
+                        },
                         came_from: { type: "STRING", description: "Optional source/company if available" },
                         intent: { type: "STRING", description: "Optional classified intent" },
                         department: { type: "STRING", description: "Optional internal field" },

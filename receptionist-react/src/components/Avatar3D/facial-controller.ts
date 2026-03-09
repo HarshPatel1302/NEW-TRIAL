@@ -21,6 +21,7 @@ export const MORPH_ALIAS_MAP: Record<string, string[]> = {
   viseme_FF: ['viseme_FF', 'viseme_FV'],
   viseme_TH: ['viseme_TH'],
   viseme_PP: ['viseme_PP', 'viseme_MBP'],
+  viseme_L: ['viseme_L'],
   viseme_sil: ['viseme_sil'],
   mouthSmileLeft: ['mouthSmileLeft', 'mouthSmile'],
   mouthSmileRight: ['mouthSmileRight', 'mouthSmile'],

@@ -3,7 +3,7 @@ import { useFrame, useThree } from '@react-three/fiber';
 import { useGLTF, useAnimations } from '@react-three/drei';
 import * as THREE from 'three';
 import { LipSyncData } from '../../lib/audio-streamer';
-import { ExpressionCue } from './facial-types';
+import { ExpressionCue, MorphChannelMap } from './facial-types';
 import { FacialController } from './facial-controller';
 
 export interface AvatarModelRef {
@@ -21,6 +21,7 @@ interface AvatarModelProps {
     isAudioPlaying?: boolean;
     lipSyncRef?: React.MutableRefObject<LipSyncData>;
     modelVersion?: AvatarModelVersion;
+    externalMorphTargets?: MorphChannelMap | null;
 }
 
 const MODEL_PATHS: Record<AvatarModelVersion, string> = {
@@ -55,10 +56,12 @@ export const AvatarModelUnified = React.forwardRef<AvatarModelRef, AvatarModelPr
         isAudioPlaying = false,
         lipSyncRef,
         modelVersion,
+        externalMorphTargets = null,
     } = props;
 
     const resolvedVersion = modelVersion || DEFAULT_MODEL_VERSION;
-    const modelPath = MODEL_PATHS[resolvedVersion];
+    const configuredModelPath = String(process.env.REACT_APP_AVATAR_MODEL_PATH || '').trim();
+    const modelPath = configuredModelPath || MODEL_PATHS[resolvedVersion];
 
     const group = useRef<THREE.Group>(null);
     const { size } = useThree();
@@ -229,13 +232,19 @@ export const AvatarModelUnified = React.forwardRef<AvatarModelRef, AvatarModelPr
             expressionCue,
             lipSync: lipSyncSignal,
         });
+        const mergedChannels: MorphChannelMap = externalMorphTargets
+            ? {
+                ...solvedChannels,
+                ...externalMorphTargets,
+            }
+            : solvedChannels;
 
         allMeshesWithMorphs.forEach((mesh) => {
             if (!mesh.morphTargetDictionary || !mesh.morphTargetInfluences) return;
 
             const mapped = facialControllerRef.current.mapToDictionary(
                 mesh.morphTargetDictionary as Record<string, number>,
-                solvedChannels,
+                mergedChannels,
             );
 
             Object.entries(mapped).forEach(([targetName, value]) => {

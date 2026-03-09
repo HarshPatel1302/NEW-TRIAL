@@ -14,6 +14,21 @@ To get started, [create a free Gemini API key](https://aistudio.google.com/apike
 $ npm install && npm start
 ```
 
+## Local Avatar Backend (Optional Phase-1)
+
+This app now supports a feature-flagged local avatar speech pipeline (Python FastAPI + Piper + Rhubarb).
+
+1. Start `../avatar-backend-python` on `http://localhost:8001`.
+2. In `.env.local` set:
+
+```env
+REACT_APP_AVATAR_PIPELINE_MODE=local
+REACT_APP_AVATAR_BACKEND_URL=http://localhost:8001
+REACT_APP_AVATAR_RENDER_ADAPTER=three_d
+```
+
+Keep `REACT_APP_AVATAR_PIPELINE_MODE=legacy` to preserve the existing behavior.
+
 We have provided several example applications on other branches of this repository:
 
 New demos with GenAI SDK:

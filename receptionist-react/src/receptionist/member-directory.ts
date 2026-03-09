@@ -393,6 +393,21 @@ function flattenMembers(rows: MemberUnitRecord[]): MatchedMember[] {
   return flattened;
 }
 
+function memberContactCompletenessScore(member: MatchedMember) {
+  let score = 0;
+  const mobileDigits = String(member.member_mobile_number || "").replace(/\D/g, "");
+  if (mobileDigits.length >= 10) {
+    score += 3;
+  }
+  if (toDisplayText(member.user_id)) {
+    score += 4;
+  }
+  if (toDisplayText(member.member_email_id)) {
+    score += 1;
+  }
+  return score;
+}
+
 function compactMembers(members: MatchedMember[]) {
   return members.map((member) => ({
     member_id: member.member_id,
@@ -484,7 +499,7 @@ export async function resolveMembersForDestination(
   const scored = members
     .map((member) => ({
       member,
-      score: scoreMember(member, scoringQuery),
+      score: scoreMember(member, scoringQuery) + memberContactCompletenessScore(member),
     }))
     .filter((entry) => entry.score >= MIN_SCORE_FOR_MATCH)
     .sort((a, b) => b.score - a.score);
