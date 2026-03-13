@@ -90,6 +90,17 @@ export const TOOLS: Tool[] = [
                 } as any
             },
             {
+                name: "check_returning_visitor",
+                description: "Search for an existing visitor by phone number. Call this immediately after collecting the phone number and before asking for the visitor's name. If found, greet them by name and skip name collection.",
+                parameters: {
+                    type: "OBJECT",
+                    properties: {
+                        phone: { type: "STRING", description: "The visitor's phone number (digits only)" }
+                    },
+                    required: ["phone"]
+                } as any
+            },
+            {
                 name: "capture_photo",
                 description: "After collecting required details for the active flow, ask the visitor to stand still for 5 seconds and then capture a JPG photo.",
                 parameters: {

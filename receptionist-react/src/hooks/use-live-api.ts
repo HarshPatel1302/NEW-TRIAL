@@ -38,6 +38,9 @@ export type UseLiveAPIResults = {
   lipSyncRef: React.MutableRefObject<LipSyncData>;
 };
 
+const MAX_RECONNECT_ATTEMPTS = 3;
+const RECONNECT_BASE_DELAY_MS = 1500;
+
 export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
   const client = useMemo(() => new GenAILiveClient(options), [options]);
   const audioStreamerRef = useRef<AudioStreamer | null>(null);
@@ -48,7 +51,15 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
   const [volume, setVolume] = useState(0);
   const [assistantAudioPlaying, setAssistantAudioPlaying] = useState(false);
 
-  // Lip sync data ref — updated by worklet, read by avatar in useFrame (no re-renders)
+  const intentionalDisconnectRef = useRef(false);
+  const reconnectAttemptsRef = useRef(0);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hasEverConnectedRef = useRef(false);
+  const modelRef = useRef(model);
+  const configRef = useRef(config);
+  modelRef.current = model;
+  configRef.current = config;
+
   const lipSyncRef = useRef<LipSyncData>({
     volume: 0,
     lowBand: 0,
@@ -61,7 +72,6 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
     timestamp: 0,
   });
 
-  // register audio for streaming server -> speakers
   useEffect(() => {
     if (!audioStreamerRef.current) {
       audioContext({ id: "audio-out" }).then(async (audioCtx: AudioContext) => {
@@ -71,15 +81,12 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
         streamer.onPlaybackStop = () => setAssistantAudioPlaying(false);
         streamer.onComplete = () => setAssistantAudioPlaying(false);
 
-        // Volume meter worklet (existing)
         await streamer.addWorklet<any>("vumeter-out", VolMeterWorket, (ev: any) => {
           setVolume(ev.data.volume);
         });
 
-        // Lip sync analyser worklet (new — extracts frequency bands for viseme mapping)
         await streamer.addWorklet<any>("lip-sync-analyser", LipSyncAnalyserWorklet, (ev: any) => {
           const data = ev.data;
-          // Write directly to ref (no setState, no re-renders)
           lipSyncRef.current.volume = data.volume;
           lipSyncRef.current.lowBand = data.lowBand;
           lipSyncRef.current.midBand = data.midBand;
@@ -89,24 +96,63 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
           lipSyncRef.current.sibilance = data.sibilance ?? 0;
           lipSyncRef.current.envelope = data.envelope ?? data.volume;
           lipSyncRef.current.timestamp = performance.now();
-
-          // Also update the streamer's copy for consistency
           streamer.lipSyncData = lipSyncRef.current;
         });
       });
     }
   }, [audioStreamerRef]);
 
+  const attemptReconnect = useCallback(async () => {
+    const attempt = reconnectAttemptsRef.current;
+    if (attempt >= MAX_RECONNECT_ATTEMPTS) {
+      console.warn(`[useLiveAPI] Max reconnect attempts (${MAX_RECONNECT_ATTEMPTS}) reached — giving up`);
+      reconnectAttemptsRef.current = 0;
+      return;
+    }
+
+    const delay = RECONNECT_BASE_DELAY_MS * Math.pow(2, attempt);
+    console.log(`[useLiveAPI] Reconnecting in ${delay}ms (attempt ${attempt + 1}/${MAX_RECONNECT_ATTEMPTS})`);
+
+    reconnectTimerRef.current = setTimeout(async () => {
+      reconnectTimerRef.current = null;
+      reconnectAttemptsRef.current = attempt + 1;
+
+      const currentConfig = configRef.current;
+      const currentModel = modelRef.current;
+      if (!currentConfig) return;
+
+      try {
+        await audioStreamerRef.current?.resume();
+        console.log("[useLiveAPI] Reconnecting...");
+        await client.connect(currentModel, currentConfig);
+        console.log("[useLiveAPI] Reconnected successfully");
+        reconnectAttemptsRef.current = 0;
+      } catch (e) {
+        console.error("[useLiveAPI] Reconnect failed:", e);
+        attemptReconnect();
+      }
+    }, delay);
+  }, [client]);
+
   useEffect(() => {
     const onOpen = () => {
-      console.log("Connection opened");
+      console.log("Connection opened (waiting for setupComplete)");
+    };
+
+    const onSetupComplete = () => {
+      console.log("Setup complete — connection ready");
+      hasEverConnectedRef.current = true;
       setConnected(true);
     };
 
-    const onClose = () => {
-      console.log("Connection closed");
+    const onClose = (event: CloseEvent) => {
+      console.log("Connection closed", { code: event?.code, reason: event?.reason });
       setConnected(false);
       setAssistantAudioPlaying(false);
+
+      if (!intentionalDisconnectRef.current && hasEverConnectedRef.current) {
+        attemptReconnect();
+      }
     };
 
     const onError = (error: ErrorEvent) => {
@@ -122,6 +168,7 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
     client
       .on("error", onError)
       .on("open", onOpen)
+      .on("setupcomplete", onSetupComplete)
       .on("close", onClose)
       .on("interrupted", stopAudioStreamer)
       .on("turncomplete", completeAudioStreamer)
@@ -131,19 +178,26 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
       client
         .off("error", onError)
         .off("open", onOpen)
+        .off("setupcomplete", onSetupComplete)
         .off("close", onClose)
         .off("interrupted", stopAudioStreamer)
         .off("turncomplete", completeAudioStreamer)
         .off("audio", onAudio)
         .disconnect();
     };
-  }, [client]);
+  }, [client, attemptReconnect]);
 
   const connect = useCallback(async () => {
     console.log("Connect callback initiated", { model, config });
     if (!config) {
       console.error("Config not set!");
       throw new Error("config has not been set");
+    }
+    intentionalDisconnectRef.current = false;
+    reconnectAttemptsRef.current = 0;
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
     }
     client.disconnect();
     try {
@@ -157,6 +211,13 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
   }, [client, config, model]);
 
   const disconnect = useCallback(async () => {
+    intentionalDisconnectRef.current = true;
+    hasEverConnectedRef.current = false;
+    reconnectAttemptsRef.current = 0;
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
     client.disconnect();
     setConnected(false);
     setAssistantAudioPlaying(false);

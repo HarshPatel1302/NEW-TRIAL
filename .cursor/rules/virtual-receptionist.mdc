@@ -1,0 +1,67 @@
+---
+description: Virtual Receptionist project rules — persistent instructions for all AI agents working on this codebase.
+globs:
+alwaysApply: true
+---
+
+# Virtual Receptionist — Project Rules
+
+## Project Overview
+
+This is a production Virtual Receptionist kiosk application. The frontend is React + TypeScript with a 3D avatar (Three.js / React Three Fiber), real-time voice via Google Gemini Live API, and lip-sync. The backend is Express + PostgreSQL. Two main flows: **visitor check-in** and **delivery/parcel handling**.
+
+## Critical Files
+
+- `receptionist-react/src/App.tsx` — main app, tool handlers, conversation state, camera logic
+- `receptionist-react/src/receptionist/config.ts` — system instruction, persona, flow definitions
+- `receptionist-react/src/receptionist/tools.ts` — Gemini tool declarations (classify_intent, collect_slot_value, save_visitor_info, capture_photo, end_interaction, request_delivery_approval)
+- `receptionist-react/src/receptionist/intents.ts` — intent configs and slot definitions
+- `receptionist-react/src/receptionist/database.ts` — DatabaseManager (saveVisitor, startSession, endSession, logSessionEvent)
+- `receptionist-react/src/receptionist/delivery-approval.ts` — delivery approval logic
+- `receptionist-react/src/hooks/use-live-api.ts` — Gemini Live API connection
+- `receptionist-react/src/lib/genai-live-client.ts` — WebSocket client for Gemini
+- `receptionist-react/src/hooks/use-webcam.ts` — webcam access
+- `receptionist-react/src/components/control-tray/ControlTray.tsx` — connect/disconnect, webcam/screen controls
+- `backend/src/server.js` — Express API routes
+
+## Safety Rules
+
+1. **Never break existing working flows while fixing one issue.** Verify both visitor and delivery flows remain functional after any change.
+2. **Preserve folder structure and code style.** Do not reorganize files or rename modules without explicit approval.
+3. **Prefer minimal, targeted changes over broad refactors.** Touch only what is necessary.
+4. **Fix root causes, not symptoms.** Investigate state transitions and data flow before patching UI.
+5. **Before deleting any code, verify it is unused and non-essential.** Search for all references first.
+6. **Keep all changes production-safe and easy to review.** No experimental flags, no debug-only hacks left in production code.
+
+## Flow Rules
+
+7. **Prevent the assistant from asking the same question twice** unless the previous answer was missing or explicitly invalid.
+8. **Ensure flow order is logical and consistent.** Visitor flow: greeting → intent classification → slot collection (name, phone, meeting_with) → photo capture → save → farewell. Delivery flow: intent → slot collection (visitor_name, delivery_company, recipient_company, recipient_name) → delivery approval → instruction → farewell.
+9. **After capturing visitor or delivery details and photo, the assistant must conclude properly** with a clear farewell message and next-step instruction.
+10. **At the end of every interaction, auto-close the session after 5 seconds of no further interaction.**
+
+## Camera / Webcam Rules
+
+11. Camera must open cleanly via `navigator.mediaDevices.getUserMedia`.
+12. Photo capture must complete and the stream must be stopped afterward — no dangling streams.
+13. Camera errors must be caught, logged, and surfaced to the conversation gracefully.
+
+## Logging and Debugging
+
+14. Add or improve debug logs where they help trace state, camera, or conversation issues.
+15. Use `console.warn` for recoverable issues, `console.error` for failures that affect user experience.
+16. Log tool calls and their results for conversation traceability.
+
+## Coding Standards
+
+17. TypeScript strict mode. No `any` unless unavoidable and commented.
+18. Functional React components with hooks. No class components.
+19. State via Zustand stores or React useState/useReducer.
+20. SCSS for styling. No inline styles except for dynamic values.
+
+## Before Every Edit
+
+- Read the relevant files first.
+- Identify the root cause before changing code.
+- After making changes, logically verify the affected flows end-to-end.
+- Report: (a) root cause, (b) files changed, (c) behavior fixed, (d) remaining risks.

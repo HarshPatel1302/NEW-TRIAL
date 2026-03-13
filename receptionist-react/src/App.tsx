@@ -368,7 +368,7 @@ function ReceptionistApp() {
   const captureInFlightRef = useRef(false);
   const lastCaptureErrorRef = useRef<string>("");
 
-  const { client, setConfig, setModel, connected, lipSyncRef, assistantAudioPlaying } = useLiveAPIContext();
+  const { client, setConfig, setModel, connected, disconnect: disconnectSession, lipSyncRef, assistantAudioPlaying } = useLiveAPIContext();
 
   // ── Gesture Controller ────────────────────────────────────────────
   const gestureControllerRef = useRef<GestureController | null>(null);
@@ -1038,6 +1038,7 @@ function ReceptionistApp() {
             const memberLookup = shouldResolveMemberDestination && hasMeaningfulValue(slotValue)
               ? await resolveMembersForDestination(slotValue, {
                   secondaryQuery: memberLookupQueryContext,
+                  maxResults: 1,
                 })
               : null;
             const matchedMemberIds = memberLookup?.memberIds || [];
@@ -1228,9 +1229,18 @@ function ReceptionistApp() {
             );
             const resolvedPurposeSubCategoryName =
               conversationState.collectedSlots.purpose_sub_category_name || "";
-            const finalPurposeCategoryId = resolvedIntent === "delivery" ? 3 : 1;
+            const mappedPurposeCategoryId = Number(
+              conversationState.collectedSlots.purpose_category_id || ""
+            );
+            const mappedPurposeCategoryName =
+              conversationState.collectedSlots.purpose_category_name || "";
+            const finalPurposeCategoryId =
+              Number.isFinite(mappedPurposeCategoryId) && mappedPurposeCategoryId > 0
+                ? mappedPurposeCategoryId
+                : resolvedIntent === "delivery" ? 3 : 1;
             const finalPurposeCategoryName =
-              resolvedIntent === "delivery" ? "DELIVERY" : "GUEST";
+              mappedPurposeCategoryName ||
+              (resolvedIntent === "delivery" ? "DELIVERY" : "GUEST");
             const resolvedWhereToGo =
               args.where_to_go ||
               conversationState.collectedSlots.where_to_go ||
@@ -1291,6 +1301,7 @@ function ReceptionistApp() {
                 memberLookupPrimaryQuery,
                 {
                   secondaryQuery: memberLookupSecondaryQuery,
+                  maxResults: 1,
                 }
               );
 
@@ -1382,6 +1393,10 @@ function ReceptionistApp() {
                 if (!hasMeaningfulValue(resolvedMeetingWith)) {
                   missingFields.push("meeting_with");
                 }
+              }
+
+              if (!visitorCheckInPhotoRef.current && captureInFlightRef.current) {
+                await waitForCaptureSettled(6000);
               }
 
               if (missingFields.length > 0) {
@@ -1481,6 +1496,9 @@ function ReceptionistApp() {
                     companyId: Number.isFinite(configuredCompanyId) && configuredCompanyId > 0
                       ? configuredCompanyId
                       : undefined,
+                    companyName: isDeliveryIntent
+                      ? (resolvedDeliveryCompany || finalCompany)
+                      : undefined,
                     isStaff: false,
                   });
 
@@ -1496,9 +1514,19 @@ function ReceptionistApp() {
           }
           else if (name === "check_returning_visitor") {
             const visitor = await DatabaseManager.findByPhone(args.phone);
-            result = visitor
-              ? { is_returning: true, last_visit: visitor.timestamp, name: visitor.name }
-              : { is_returning: false };
+            if (visitor) {
+              setConversationState(prev => ({
+                ...prev,
+                collectedSlots: {
+                  ...prev.collectedSlots,
+                  visitor_name: visitor.name,
+                  phone: args.phone.replace(/\D/g, ""),
+                },
+              }));
+              result = { is_returning: true, last_visit: visitor.timestamp, name: visitor.name };
+            } else {
+              result = { is_returning: false };
+            }
           }
           else if (name === "route_to_department") {
             setExpressionCue("explaining_confident");
@@ -1779,7 +1807,7 @@ function ReceptionistApp() {
               console.log("Interaction ended. Resetting in 5 seconds...");
               setTimeout(() => {
                 stopCameraPreview();
-                client.disconnect();
+                disconnectSession();
                 setVideoStream(null);
                 setConversationState({ collectedSlots: {} });
                 visitorCheckInPhotoRef.current = null;
@@ -1816,21 +1844,21 @@ function ReceptionistApp() {
                     : "Collect name, phone, and whom they want to visit before photo capture.",
               };
             } else {
-              const captured = await captureCheckInPhotoAfterCountdown("tool_call_after_5s_still_pose", 5000);
-              if (captured) {
-                result = {
-                  status: "success",
-                  message: "Photo captured successfully in JPG format after 5 seconds.",
-                  format: "image/jpeg",
-                };
-              } else {
-                result = {
-                  status: "error",
-                  message:
-                    lastCaptureErrorRef.current ||
-                    "Camera not available. Ensure video permission is enabled and try again.",
-                };
-              }
+              // Respond to Gemini immediately so the Live API doesn't time out
+              // waiting for the tool response during the 5-second countdown.
+              result = {
+                status: "success",
+                message: "Photo capture started. The photo will be ready in 5 seconds. Proceed with the next step.",
+                format: "image/jpeg",
+              };
+
+              // Fire photo capture in the background (not awaited)
+              void (async () => {
+                const captured = await captureCheckInPhotoAfterCountdown("tool_call_after_5s_still_pose", 5000);
+                if (!captured) {
+                  console.warn("[capture_photo] Background capture failed:", lastCaptureErrorRef.current);
+                }
+              })();
             }
           }
         } catch (e: any) {
@@ -1860,7 +1888,7 @@ function ReceptionistApp() {
     return () => {
       client.off("toolcall", onToolCall);
     };
-  }, [client, connected, conversationState, fireGesture, captureCheckInPhotoAfterCountdown, persistSecuritySnapshotIfNeeded, stopCameraPreview]);
+  }, [client, connected, conversationState, disconnectSession, fireGesture, captureCheckInPhotoAfterCountdown, waitForCaptureSettled, persistSecuritySnapshotIfNeeded, stopCameraPreview]);
 
   return (
     <div className="app-container">

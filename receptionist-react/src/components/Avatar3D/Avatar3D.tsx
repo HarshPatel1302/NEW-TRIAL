@@ -1,4 +1,5 @@
-import React, { Suspense, useRef } from 'react';
+import React, { Suspense, useCallback, useRef, useState } from 'react';
+import * as THREE from 'three';
 import { Canvas } from '@react-three/fiber';
 import { Environment } from '@react-three/drei';
 import { AvatarModelUnified as AvatarModel, AvatarModelRef } from './AvatarModelUnified';
@@ -25,8 +26,21 @@ interface Avatar3DProps {
 export const Avatar3D = React.forwardRef<Avatar3DRef, Avatar3DProps>((props, ref) => {
     const { speechText, expressionCue, isAudioPlaying, lipSyncRef } = props;
     const avatarRef = useRef<AvatarModelRef>(null);
+    const [contextLost, setContextLost] = useState(false);
 
-    // Expose the avatar methods to parent
+    const handleCreated = useCallback(({ gl }: { gl: THREE.WebGLRenderer }) => {
+        const canvas = gl.domElement;
+        canvas.addEventListener('webglcontextlost', (e) => {
+            e.preventDefault();
+            console.warn('[Avatar3D] WebGL context lost — pausing render');
+            setContextLost(true);
+        });
+        canvas.addEventListener('webglcontextrestored', () => {
+            console.log('[Avatar3D] WebGL context restored');
+            setContextLost(false);
+        });
+    }, []);
+
     React.useImperativeHandle(ref, () => ({
         playAnimation: (name: string, options?: { loop?: boolean; duration?: number }) => {
             avatarRef.current?.playAnimation(name, options);
@@ -44,31 +58,31 @@ export const Avatar3D = React.forwardRef<Avatar3DRef, Avatar3DProps>((props, ref
 
     return (
         <div className="avatar-container">
-            {/* Loading screen renders OUTSIDE Canvas (HTML/CSS overlay) */}
             <LoadingScreen />
 
             <Canvas
                 camera={{
-                    // Pull camera back to avoid shoulder/head clipping on narrow screens.
                     position: [0, 1.5, 4],
                     fov: 40,
                     near: 0.1,
                     far: 100
                 }}
+                dpr={[1, 1.5]}
                 gl={{
                     antialias: true,
-                    alpha: true
+                    alpha: true,
+                    powerPreference: 'default',
+                    failIfMajorPerformanceCaveat: false,
                 }}
+                frameloop={contextLost ? 'never' : 'always'}
+                onCreated={handleCreated as any}
             >
-                {/* Industry-standard lighting for PBR materials */}
                 <ambientLight intensity={0.6} />
                 <directionalLight position={[10, 10, 5]} intensity={1} castShadow />
                 <directionalLight position={[-5, 5, -5]} intensity={0.5} />
 
-                {/* HDR environment for realistic reflections */}
                 <Environment preset="city" />
 
-                {/* Suspense fallback must be null or a THREE.js object */}
                 <Suspense fallback={null}>
                     <AvatarModel
                         ref={avatarRef}
