@@ -1891,48 +1891,68 @@ function ReceptionistApp() {
   }, [client, connected, conversationState, disconnectSession, fireGesture, captureCheckInPhotoAfterCountdown, waitForCaptureSettled, persistSecuritySnapshotIfNeeded, stopCameraPreview]);
 
   return (
-    <div className="app-container">
-      <main className="app-main">
-        <div className="main-app-area">
-          <h1 className="app-title">Greenscape Receptionist</h1>
+    <div className="kiosk-screen">
+      {/* ── Title ───────────────────────────────────────────────── */}
+      <header className="kiosk-header">
+        <h1 className="kiosk-title">Greenscape Receptionist</h1>
+      </header>
 
-          <div className="avatar-wrapper">
-            <Avatar3D
-              ref={avatarRef}
-              connected={connected}
-              speechText={lastAudioText}
-              expressionCue={expressionCue}
-              isAudioPlaying={assistantAudioPlaying}
-              lipSyncRef={lipSyncRef}
-            />
-          </div>
-
-          <ControlTray
-            videoRef={videoRef}
-            supportsVideo={false}
-            onVideoStreamChange={setVideoStream}
-            enableEditingSettings={false}
-          >
-          </ControlTray>
-
-          {/* Hidden video element for capture, or visible for preview */}
-          <video
-            ref={videoRef}
-            autoPlay
-            playsInline
-            muted
-            style={{
-              position: "absolute",
-              bottom: "80px",
-              right: "20px",
-              width: "200px",
-              borderRadius: "10px",
-              border: "2px solid #555",
-              display: videoStream ? "block" : "none"
-            }}
+      {/* ── Avatar (upper-body crop) ────────────────────────────── */}
+      <div className="kiosk-avatar-frame">
+        <div className="kiosk-avatar-crop">
+          <Avatar3D
+            ref={avatarRef}
+            connected={connected}
+            speechText={lastAudioText}
+            expressionCue={expressionCue}
+            isAudioPlaying={assistantAudioPlaying}
+            lipSyncRef={lipSyncRef}
           />
         </div>
-      </main>
+      </div>
+
+      {/* ── Start / Connect button ──────────────────────────────── */}
+      <div className="kiosk-connect-area">
+        <ControlTray
+          videoRef={videoRef}
+          supportsVideo={false}
+          onVideoStreamChange={setVideoStream}
+          enableEditingSettings={false}
+        />
+      </div>
+
+      {/* ── 3 Action Cards ──────────────────────────────────────── */}
+      <div className="kiosk-cards-row">
+        <div className="kiosk-card">
+          <span className="material-symbols-outlined kiosk-card-icon">qr_code_2</span>
+          <span className="kiosk-card-label">QR Code / Passcode</span>
+        </div>
+        <div className="kiosk-card">
+          <span className="material-symbols-outlined kiosk-card-icon">person_add</span>
+          <span className="kiosk-card-label">New Visitor</span>
+        </div>
+        <div className="kiosk-card">
+          <span className="material-symbols-outlined kiosk-card-icon">local_shipping</span>
+          <span className="kiosk-card-label">Delivery</span>
+        </div>
+      </div>
+
+      {/* Hidden video element for capture */}
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        muted
+        style={{
+          position: "absolute",
+          bottom: "80px",
+          right: "20px",
+          width: "200px",
+          borderRadius: "10px",
+          border: "2px solid #555",
+          display: videoStream ? "block" : "none"
+        }}
+      />
     </div>
   );
 }

@@ -62,7 +62,7 @@ export const Avatar3D = React.forwardRef<Avatar3DRef, Avatar3DProps>((props, ref
 
             <Canvas
                 camera={{
-                    position: [0, 1.5, 4],
+                    position: [-0.3, -0.05, 2],
                     fov: 40,
                     near: 0.1,
                     far: 100
