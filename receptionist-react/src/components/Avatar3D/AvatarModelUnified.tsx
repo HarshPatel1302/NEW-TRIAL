@@ -135,16 +135,22 @@ export const AvatarModelUnified = React.forwardRef<AvatarModelRef, AvatarModelPr
         headBaseCapturedRef.current = false;
     }, [modelPath]);
 
+    const BLOCKED_ANIMATIONS = new Set(['talking', 'pointing', 'nodYes', 'bow']);
+
     const playAction = (name: string, options?: { loop?: boolean; duration?: number }) => {
-        if (!actions[name] || !mixer) {
-            console.warn(`Animation "${name}" not found. Available:`, Object.keys(actions));
+        if (!mixer) return;
+
+        const safeName = BLOCKED_ANIMATIONS.has(name) ? IDLE_CLIP_NAME : name;
+        const resolvedName = actions[safeName] ? safeName : (safeName !== IDLE_CLIP_NAME && actions[IDLE_CLIP_NAME] ? IDLE_CLIP_NAME : safeName);
+        if (!actions[resolvedName]) {
+            console.warn(`Animation "${name}" not found (fallback to idle also missing). Available:`, Object.keys(actions));
             return;
         }
 
-        const next = actions[name]!;
+        const next = actions[resolvedName]!;
         const prev = currentActionRef.current;
         const isLoop = options?.loop !== false;
-        const clipDuration = animationDurationsRef.current[name];
+        const clipDuration = animationDurationsRef.current[resolvedName];
 
         next.reset();
         next.stopFading();
@@ -160,8 +166,8 @@ export const AvatarModelUnified = React.forwardRef<AvatarModelRef, AvatarModelPr
             );
             next.setEffectiveTimeScale(speed);
         } else {
-            next.setEffectiveTimeScale(name === IDLE_CLIP_NAME ? 0 : 1);
-            if (name === IDLE_CLIP_NAME) {
+            next.setEffectiveTimeScale(resolvedName === IDLE_CLIP_NAME ? 0 : 1);
+            if (resolvedName === IDLE_CLIP_NAME) {
                 // Keep the avatar in a static standing pose whenever returning to idle.
                 next.time = 0;
             }

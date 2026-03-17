@@ -47,7 +47,7 @@ describe('receptionist avatar GLB contract', () => {
 
     const json = parseGlbJson(modelPath);
     const animationNames = new Set((json.animations || []).map((a) => a.name || ''));
-    const requiredAnimations = ['idle', 'waving', 'talking', 'pointing', 'nodYes', 'bow'];
+    const requiredAnimations = ['idle', 'waving'];
     requiredAnimations.forEach((name) => {
       expect(animationNames.has(name)).toBe(true);
     });

@@ -1894,7 +1894,7 @@ function ReceptionistApp() {
     <div className="kiosk-screen">
       {/* ── Title ───────────────────────────────────────────────── */}
       <header className="kiosk-header">
-        <h1 className="kiosk-title">Greenscape Receptionist</h1>
+        <h1 className="kiosk-title">CyberOne Receptionist</h1>
       </header>
 
       {/* ── Avatar (upper-body crop) ────────────────────────────── */}
