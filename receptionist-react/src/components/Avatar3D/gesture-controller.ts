@@ -1,13 +1,10 @@
 /**
  * GestureController — State machine for avatar gesture animations.
- * 
- * Manages transitions between:
- *   IDLE → TALKING → WAVING → POINTING → NODDING → BOWING
- * 
- * Key behaviors:
- * - Audio-driven: enters TALKING when audio starts, exits 800ms after audio stops
- * - One-shot gestures (wave, nod, bow, point) auto-return to previous state
- * - Prevents flicker on short pauses via debouncing
+ *
+ * Production rule: wave at greeting only, then idle for the rest.
+ * Lip sync and blinking continue during both states.
+ *
+ * States: idle, waving (greeting only), talking/pointing/nodYes/bow (legacy, not triggered)
  */
 
 export type GestureState = 'idle' | 'talking' | 'waving' | 'pointing' | 'nodYes' | 'bow';
@@ -101,26 +98,14 @@ export class GestureController {
 
     private onAudioStart(): void {
         this.audioActive = true;
-
-        // Cancel any pending audio-stop transition
         if (this.audioStopTimeout) {
             clearTimeout(this.audioStopTimeout);
             this.audioStopTimeout = null;
         }
-
-        // If already talking or in a one-shot gesture, don't interrupt
+        // Production: stay idle during speech. Lip sync handles mouth; no full-body talking.
+        if (this.currentState === 'idle') return;
+        if (this.isOneShot(this.currentState)) return;
         if (this.currentState === 'talking') return;
-        if (this.isOneShot(this.currentState)) return; // let gesture finish
-
-        // Talking-lite: short utterances should not trigger full body talking animation.
-        if (!this.talkingStartTimeout) {
-            this.talkingStartTimeout = setTimeout(() => {
-                this.talkingStartTimeout = null;
-                if (this.audioActive && this.currentState === 'idle') {
-                    this.transitionTo('talking');
-                }
-            }, GestureController.TALKING_START_DELAY);
-        }
     }
 
     private onAudioStop(): void {

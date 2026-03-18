@@ -201,6 +201,28 @@ function parseMemberObjects(value?: string): ParsedMemberNote[] {
   }
 }
 
+function splitMeetingWith(
+  meetingWith: string,
+  recipientCompany?: string
+): { company: string; person: string } {
+  const raw = String(meetingWith || "").trim();
+  const companyFromNotes = String(recipientCompany || "").trim();
+  const sep = raw.match(/\s+[-–]\s+/);
+  if (sep && sep.index != null) {
+    const idx = sep.index;
+    const company = raw.slice(0, idx).trim();
+    const person = raw.slice(idx + sep[0].length).trim();
+    return {
+      company: company || companyFromNotes || "-",
+      person: person || "-",
+    };
+  }
+  return {
+    company: companyFromNotes || "-",
+    person: raw || "-",
+  };
+}
+
 function formatMemberMatches(members: ParsedMemberNote[]) {
   if (members.length === 0) return "-";
   return members
@@ -577,7 +599,8 @@ export default function AdminDashboard() {
                   <th>Name</th>
                   <th>Photo</th>
                   <th>Phone</th>
-                  <th>Meeting With</th>
+                  <th>Company</th>
+                  <th>Person</th>
                   <th>Came From</th>
                   <th>Purpose</th>
                   <th>Purpose Category</th>
@@ -602,6 +625,10 @@ export default function AdminDashboard() {
                   const purposeCategoryId = parsedNotes.meta.purpose_category_id || "-";
                   const purposeSubCategoryId = parsedNotes.meta.purpose_sub_category_id || "-";
                   const recipientCompany = parsedNotes.meta.recipient_company || "-";
+                  const { company: meetingCompany, person: meetingPerson } = splitMeetingWith(
+                    visitor.meetingWith,
+                    parsedNotes.meta.recipient_company
+                  );
                   const approvalDecision = formatDecision(
                     parsedNotes.meta.approval_decision || parsedNotes.meta.approval_status
                   );
@@ -622,7 +649,8 @@ export default function AdminDashboard() {
                         )}
                       </td>
                       <td>{visitor.phone}</td>
-                      <td>{visitor.meetingWith}</td>
+                      <td>{meetingCompany}</td>
+                      <td>{meetingPerson}</td>
                       <td>{visitor.company || "-"}</td>
                       <td>{visitor.purpose || "-"}</td>
                       <td>{purposeCategoryId}</td>

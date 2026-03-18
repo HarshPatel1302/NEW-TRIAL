@@ -63,7 +63,7 @@ const MEMBER_LIST_API_URL = String(
 ).trim();
 const MEMBER_LIST_COMPANY_ID = String(process.env.REACT_APP_WALKIN_COMPANY_ID || "8196").trim();
 
-const REQUEST_TIMEOUT_MS = 7000;
+const REQUEST_TIMEOUT_MS = 4000;
 const CACHE_TTL_MS = 5 * 60 * 1000;
 const MIN_SCORE_FOR_MATCH = 45;
 

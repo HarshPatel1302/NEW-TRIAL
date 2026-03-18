@@ -1,0 +1,44 @@
+---
+description: Virtual receptionist project goals, slot definitions, and non-negotiable user experience rules for realtime visitor and delivery intake.
+alwaysApply: true
+---
+
+# Virtual receptionist core goals
+
+Treat this project as a realtime kiosk / front-desk assistant. Optimize for human perception first, then backend completeness.
+
+## Non-negotiable experience
+- Start speaking within 1 second of user turn end in warmed-up conditions.
+- If any backend action is slow, speak a short acknowledgement immediately and continue work asynchronously.
+- Never make the user wait in silence for tool calls unless absolutely unavoidable.
+- After the final wait-in-lobby message, auto-close the conversation within 5 seconds.
+- Do not lose admin-panel data when the session ends.
+
+## New visitor flow slots
+Required:
+1. visitor_name
+2. phone_number
+3. came_from
+4. company_to_visit
+
+Optional:
+5. person_to_meet
+
+Rules:
+- Accept any spoken `person_to_meet` as free text.
+- Never reject the person name because it is unknown.
+- Never rely on a default saved person name.
+- If the visitor does not know the person name, continue without blocking.
+
+## Delivery flow slots
+Required:
+1. delivery_person_name
+2. delivery_company
+3. parcel_for_company
+4. parcel_recipient_name
+
+## Smart slot filling
+- Extract all slots present in a single utterance.
+- Ask only for missing required slots.
+- Do not re-ask for slots that were already captured with acceptable confidence.
+- Preserve high-confidence existing values unless the user explicitly corrects them.

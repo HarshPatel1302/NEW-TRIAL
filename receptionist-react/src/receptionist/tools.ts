@@ -20,18 +20,32 @@ export const TOOLS: Tool[] = [
             },
             {
                 name: "collect_slot_value",
-                description: "Record one collected field. For visitor flow use visitor_name, phone, meeting_with. For delivery flow use visitor_name, delivery_company, recipient_company, recipient_name.",
+                description: "Record ONE field the visitor JUST provided. Call ONLY when the visitor has just answered. Never call before asking. Never ask again after status:success for that slot. Use the next_slot in the response to know what to ask next.",
                 parameters: {
                     type: "OBJECT",
                     properties: {
                         slot_name: {
                             type: "STRING",
                             description:
-                                "Use one of: visitor_name, phone, meeting_with, delivery_company, recipient_company, recipient_name."
+                                "Use one of: visitor_name, phone, came_from, company_to_visit, person_in_company, meeting_with, delivery_company, recipient_company, recipient_name."
                         },
                         value: { type: "STRING", description: "The value provided by the visitor" }
                     },
                     required: ["slot_name", "value"]
+                } as any
+            },
+            {
+                name: "collect_slots_batch",
+                description: "When the visitor provides MULTIPLE fields in one sentence (e.g. 'My name is Harsh Patel and I want to meet Futurescape and Mihir Jadhav'), extract ALL at once. Pass slots as JSON object: { visitor_name: 'Harsh Patel', company_to_visit: 'Futurescape', person_in_company: 'Mihir Jadhav' }. Only include slots the visitor clearly provided. Accept any person name as free text; never reject.",
+                parameters: {
+                    type: "OBJECT",
+                    properties: {
+                        slots: {
+                            type: "OBJECT",
+                            description: "Object of slot_name -> value. Keys: visitor_name, phone, came_from, company_to_visit, person_in_company, delivery_company, recipient_company, recipient_name."
+                        }
+                    },
+                    required: ["slots"]
                 } as any
             },
             {
@@ -71,8 +85,10 @@ export const TOOLS: Tool[] = [
                     properties: {
                         name: { type: "STRING", description: "Visitor's full name" },
                         phone: { type: "STRING", description: "Visitor's phone number" },
-                        meeting_with: { type: "STRING", description: "Name of the person they want to meet, or a flat/unit number like 1904" },
-                        came_from: { type: "STRING", description: "Optional source/company if available" },
+                        meeting_with: { type: "STRING", description: "Company - Person or unit number. Derived from company_to_visit and person_in_company." },
+                        came_from: { type: "STRING", description: "Where visitor came from (e.g. Walk-in, Shadowfax)" },
+                        company_to_visit: { type: "STRING", description: "Which company in the building they want to visit" },
+                        person_in_company: { type: "STRING", description: "Optional: which person in that company they want to meet" },
                         intent: { type: "STRING", description: "Optional classified intent" },
                         department: { type: "STRING", description: "Optional internal field" },
                         purpose: { type: "STRING", description: "Optional purpose field" },
@@ -86,12 +102,12 @@ export const TOOLS: Tool[] = [
                         approval_decision: { type: "STRING", description: "Optional approval decision" },
                         approval_status: { type: "STRING", description: "Optional approval status" }
                     },
-                    required: ["name", "phone", "meeting_with"]
+                    required: ["name", "phone"]
                 } as any
             },
             {
                 name: "check_returning_visitor",
-                description: "Search for an existing visitor by phone number. Call this immediately after collecting the phone number and before asking for the visitor's name. If found, greet them by name and skip name collection.",
+                description: "Search for an existing visitor by phone. Call in the SAME turn as collect_slot_value(phone, value) right after the visitor gives their phone. If is_returning=true, use the returned name and skip asking for name. If is_returning=false, ask for name next. Never ask for phone again.",
                 parameters: {
                     type: "OBJECT",
                     properties: {
@@ -102,7 +118,7 @@ export const TOOLS: Tool[] = [
             },
             {
                 name: "capture_photo",
-                description: "After collecting required details for the active flow, ask the visitor to stand still for 5 seconds and then capture a JPG photo.",
+                description: "After all required details collected, say 'Stand still 5 seconds' then call this. Photo captures in background. Immediately call save_visitor_info next - it will wait for the photo.",
                 parameters: {
                     type: "OBJECT",
                     properties: {},

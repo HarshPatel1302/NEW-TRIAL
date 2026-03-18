@@ -474,15 +474,15 @@ app.post("/api/sessions/:id/end", async (req, res) => {
     return res.status(400).json({ error: "Invalid session id" });
   }
 
-  const { status = "completed", summary = "" } = req.body || {};
+  const { status = "completed", summary = "", close_reason = null } = req.body || {};
 
   try {
     const result = await query(
       `UPDATE sessions
-       SET status = $2, summary = $3, ended_at = NOW(), updated_at = NOW()
+       SET status = $2, summary = $3, close_reason = $4, ended_at = NOW(), updated_at = NOW()
        WHERE id = $1
        RETURNING *`,
-      [sessionId, String(status), String(summary)]
+      [sessionId, String(status), String(summary), close_reason ? String(close_reason) : null]
     );
 
     if (result.rows.length === 0) {

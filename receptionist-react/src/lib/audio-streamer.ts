@@ -41,8 +41,8 @@ export class AudioStreamer {
   private isStreamComplete: boolean = false;
   private checkInterval: number | null = null;
   private scheduledTime: number = 0;
-  // Lower startup buffer for snappier assistant responses while preserving stability.
-  private initialBufferTime: number = 0.06;
+  // Lower startup buffer for snappier assistant responses
+  private initialBufferTime: number = 0.03;
   // Web Audio API nodes. source => gain => destination
   public gainNode: GainNode;
   public source: AudioBufferSourceNode;

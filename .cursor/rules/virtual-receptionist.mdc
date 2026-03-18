@@ -14,8 +14,8 @@ This is a production Virtual Receptionist kiosk application. The frontend is Rea
 
 - `receptionist-react/src/App.tsx` — main app, tool handlers, conversation state, camera logic
 - `receptionist-react/src/receptionist/config.ts` — system instruction, persona, flow definitions
-- `receptionist-react/src/receptionist/tools.ts` — Gemini tool declarations (classify_intent, collect_slot_value, save_visitor_info, capture_photo, end_interaction, request_delivery_approval)
-- `receptionist-react/src/receptionist/intents.ts` — intent configs and slot definitions
+- `receptionist-react/src/receptionist/tools.ts` — Gemini tool declarations (classify_intent, collect_slot_value, collect_slots_batch, save_visitor_info, capture_photo, end_interaction, request_delivery_approval)
+- `receptionist-react/src/receptionist/slot-utils.ts` — slot filling logic (getMissingFieldsBeforePhoto, getNextSlotToAsk), extracted for tests
 - `receptionist-react/src/receptionist/database.ts` — DatabaseManager (saveVisitor, startSession, endSession, logSessionEvent)
 - `receptionist-react/src/receptionist/delivery-approval.ts` — delivery approval logic
 - `receptionist-react/src/hooks/use-live-api.ts` — Gemini Live API connection
@@ -36,7 +36,7 @@ This is a production Virtual Receptionist kiosk application. The frontend is Rea
 ## Flow Rules
 
 7. **Prevent the assistant from asking the same question twice** unless the previous answer was missing or explicitly invalid.
-8. **Ensure flow order is logical and consistent.** Visitor flow: greeting → intent classification → slot collection (name, phone, meeting_with) → photo capture → save → farewell. Delivery flow: intent → slot collection (visitor_name, delivery_company, recipient_company, recipient_name) → delivery approval → instruction → farewell.
+8. **Ensure flow order is logical and consistent.** Visitor flow: greeting → intent → slot collection (phone, name, came_from, company_to_visit, person_in_company optional) → photo → save → farewell → auto-close. Delivery flow: intent → slot collection (visitor_name, delivery_company, recipient_company, recipient_name) → photo → approval → save → farewell → auto-close.
 9. **After capturing visitor or delivery details and photo, the assistant must conclude properly** with a clear farewell message and next-step instruction.
 10. **At the end of every interaction, auto-close the session after 5 seconds of no further interaction.**
 

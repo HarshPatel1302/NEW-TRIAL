@@ -8,16 +8,22 @@
       "args": [
         "-y",
         "@modelcontextprotocol/server-filesystem",
-        "${workspaceFolder}"
-      ]
+        "/Users/harshui/Documents/VR/NEW-TRIAL"
+      ],
+      "env": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin:/Users/harshui/.local/bin"
+      }
     },
     "git": {
-      "command": "uvx",
+      "command": "/Users/harshui/.local/bin/uvx",
       "args": [
         "mcp-server-git",
         "--repository",
-        "${workspaceFolder}"
-      ]
+        "/Users/harshui/Documents/VR/NEW-TRIAL"
+      ],
+      "env": {
+        "PATH": "/usr/local/bin:/usr/bin:/bin:/Users/harshui/.local/bin"
+      }
     }
   }
 }

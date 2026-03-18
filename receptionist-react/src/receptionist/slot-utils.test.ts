@@ -1,0 +1,120 @@
+import {
+  getMissingFieldsBeforePhoto,
+  getNextSlotToAsk,
+  hasMeaningfulValue,
+  isValidVisitorPhone,
+  inferActiveFlow,
+} from "./slot-utils";
+
+describe("slot-utils", () => {
+  describe("getMissingFieldsBeforePhoto", () => {
+    it("visitor: requires name, phone, came_from, company_to_visit", () => {
+      const r = getMissingFieldsBeforePhoto("meet_person", {});
+      expect(r.flow).toBe("visitor");
+      expect(r.missing).toContain("name");
+      expect(r.missing).toContain("phone");
+      expect(r.missing).toContain("came_from");
+      expect(r.missing).toContain("company_to_visit");
+    });
+
+    it("visitor: person_in_company is optional", () => {
+      const slots = {
+        visitor_name: "Harsh Patel",
+        phone: "9876543210",
+        came_from: "Walk-in",
+        company_to_visit: "Futurescape",
+      };
+      const r = getMissingFieldsBeforePhoto("meet_person", slots);
+      expect(r.missing).toHaveLength(0);
+    });
+
+    it("visitor: accepts meeting_with as company_to_visit fallback", () => {
+      const slots = {
+        visitor_name: "Harsh",
+        phone: "9876543210",
+        came_from: "Walk-in",
+        meeting_with: "Futurescape",
+      };
+      const r = getMissingFieldsBeforePhoto("meet_person", slots);
+      expect(r.missing).toHaveLength(0);
+    });
+
+    it("delivery: requires all 4 fields", () => {
+      const r = getMissingFieldsBeforePhoto("delivery", {});
+      expect(r.flow).toBe("delivery");
+      expect(r.missing).toContain("delivery_person_name");
+      expect(r.missing).toContain("delivery_company");
+      expect(r.missing).toContain("recipient_company");
+      expect(r.missing).toContain("recipient_name");
+    });
+
+    it("delivery: all 4 present yields no missing", () => {
+      const slots = {
+        visitor_name: "Courier",
+        delivery_company: "Blue Dart",
+        recipient_company: "Futurescape",
+        recipient_name: "Mihir",
+      };
+      const r = getMissingFieldsBeforePhoto("delivery", slots);
+      expect(r.missing).toHaveLength(0);
+    });
+  });
+
+  describe("getNextSlotToAsk", () => {
+    it("visitor: asks person_in_company after company_to_visit when person missing", () => {
+      const slots = {
+        visitor_name: "Harsh",
+        phone: "9876543210",
+        came_from: "Walk-in",
+        company_to_visit: "Futurescape",
+      };
+      expect(getNextSlotToAsk("meet_person", slots)).toBe("person_in_company");
+    });
+
+    it("visitor: returns null when all required + optional provided", () => {
+      const slots = {
+        visitor_name: "Harsh",
+        phone: "9876543210",
+        came_from: "Walk-in",
+        company_to_visit: "Futurescape",
+        person_in_company: "Mihir",
+      };
+      expect(getNextSlotToAsk("meet_person", slots)).toBeNull();
+    });
+
+    it("visitor: returns null when person not known (optional)", () => {
+      const slots = {
+        visitor_name: "Harsh",
+        phone: "9876543210",
+        came_from: "Walk-in",
+        company_to_visit: "Futurescape",
+      };
+      expect(getNextSlotToAsk("meet_person", slots)).toBe("person_in_company");
+    });
+  });
+
+  describe("hasMeaningfulValue", () => {
+    it("rejects n/a, none, unknown", () => {
+      expect(hasMeaningfulValue("n/a")).toBe(false);
+      expect(hasMeaningfulValue("none")).toBe(false);
+      expect(hasMeaningfulValue("unknown")).toBe(false);
+    });
+    it("accepts real values", () => {
+      expect(hasMeaningfulValue("Harsh Patel")).toBe(true);
+      expect(hasMeaningfulValue("Futurescape")).toBe(true);
+    });
+  });
+
+  describe("isValidVisitorPhone", () => {
+    it("requires 10+ digits", () => {
+      expect(isValidVisitorPhone("9876543210")).toBe(true);
+      expect(isValidVisitorPhone("987654321")).toBe(false);
+    });
+  });
+
+  describe("inferActiveFlow", () => {
+    it("delivery slots imply delivery flow", () => {
+      expect(inferActiveFlow("meet_person", { delivery_company: "Blue Dart" })).toBe("delivery");
+    });
+  });
+});

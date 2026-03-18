@@ -27,11 +27,24 @@ CREATE TABLE IF NOT EXISTS sessions (
     intent TEXT,
     status TEXT NOT NULL DEFAULT 'active',
     summary TEXT,
+    close_reason TEXT,
     started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     ended_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Migration: add close_reason for existing deployments
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'sessions' AND column_name = 'close_reason'
+  ) THEN
+    ALTER TABLE sessions ADD COLUMN close_reason TEXT;
+    CREATE INDEX IF NOT EXISTS sessions_close_reason_idx ON sessions (close_reason) WHERE close_reason IS NOT NULL;
+  END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS sessions_visitor_id_idx ON sessions (visitor_id);
 CREATE INDEX IF NOT EXISTS sessions_status_idx ON sessions (status);

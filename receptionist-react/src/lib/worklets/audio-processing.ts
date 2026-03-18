@@ -17,9 +17,8 @@
 const AudioRecordingWorklet = `
 class AudioProcessingWorklet extends AudioWorkletProcessor {
 
-  // send and clear buffer every 2048 samples, 
-  // which at 16khz is about 8 times a second
-  buffer = new Int16Array(2048);
+  // 512 samples (~32ms at 16kHz) for low latency per Gemini Live best practice
+  buffer = new Int16Array(512);
 
   // current write index
   bufferWriteIndex = 0;

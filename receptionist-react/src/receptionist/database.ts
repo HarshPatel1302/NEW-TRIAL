@@ -155,7 +155,7 @@ export class DatabaseManager {
 
     static async endSession(
         sessionId: string,
-        payload: { status?: string; summary?: string } = {}
+        payload: { status?: string; summary?: string; close_reason?: string } = {}
     ): Promise<void> {
         if (!sessionId) return;
         try {
