@@ -1,0 +1,19 @@
+---
+description: Safe session completion and disconnect handling for the virtual receptionist (no GLB avatar).
+alwaysApply: true
+---
+
+# Session lifecycle
+
+## Safe completion
+Treat session completion as a deterministic sequence:
+1. Final user-facing message finishes (or TTS ends for QR/passcode paths).
+2. Persistence success or durable queue acknowledgement confirmed.
+3. Close reason set to `completed_by_system` where applicable.
+4. Disconnect / hangup triggered automatically within ~5 seconds for Live API flows.
+5. Cleanup handlers run (camera tracks stopped, etc.).
+
+## Failure handling
+- Distinguish system-completed vs user-abandoned vs backend-failed sessions.
+- If persistence fails transiently, queue retry work and still mark the close reason explicitly.
+- Never let a successful interaction appear as a random user disconnect.

@@ -108,11 +108,40 @@
   bottom: 0;
   left: 50%;
   transform: translate(-50%, 0);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding-bottom: 18px;
+}
+
+.control-tray-mic-error {
+  max-width: min(92vw, 520px);
+  padding: 10px 14px;
+  border-radius: 12px;
+  font-size: 13px;
+  line-height: 1.4;
+  background: rgba(120, 40, 35, 0.45);
+  border: 1px solid rgba(255, 150, 130, 0.5);
+  color: #ffe8e4;
+  text-align: center;
+}
+
+/* Kiosk: no control pill — show mic error above bottom safe area */
+.control-tray-mic-error--floating {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: max(24px, env(safe-area-inset-bottom, 0px));
+  z-index: 20;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+}
+
+.control-tray-row {
   display: inline-flex;
   justify-content: center;
   align-items: flex-start;
   gap: 8px;
-  padding-bottom: 18px;
 
   .disabled .action-button,
   .action-button.disabled {

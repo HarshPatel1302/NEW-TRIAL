@@ -1,0 +1,372 @@
+/* Cyber One kiosk — home, QR, passcode (virtual reuses existing orb styles) */
+
+.cyber-home {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100dvh;
+  width: 100%;
+  padding: 32px 20px 48px;
+  box-sizing: border-box;
+}
+
+.cyber-home-header {
+  text-align: center;
+  margin-bottom: clamp(28px, 6vh, 56px);
+}
+
+.cyber-home-title {
+  margin: 0;
+  font-family: "Space Mono", monospace;
+  font-size: clamp(1.4rem, 4vw, 2.4rem);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #e8f5e9;
+  text-shadow: 0 0 48px rgba(120, 200, 160, 0.2);
+}
+
+.cyber-home-flash {
+  margin: 16px auto 0;
+  max-width: 520px;
+  padding: 12px 18px;
+  border-radius: 14px;
+  background: rgba(40, 120, 80, 0.35);
+  border: 1px solid rgba(168, 218, 181, 0.35);
+  color: #c8e6c9;
+  font-size: clamp(0.85rem, 2vw, 1rem);
+}
+
+.cyber-home-tiles {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: clamp(16px, 3vw, 28px);
+  width: 100%;
+  max-width: 1100px;
+}
+
+.cyber-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  min-height: clamp(140px, 22vh, 220px);
+  padding: 24px 16px;
+  border-radius: 20px;
+  border: 1px solid rgba(168, 218, 181, 0.2);
+  background: rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(14px);
+  cursor: pointer;
+  color: #e8ece9;
+  transition:
+    transform 0.18s,
+    border-color 0.18s,
+    box-shadow 0.18s;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+}
+
+.cyber-tile:hover {
+  transform: translateY(-4px);
+  border-color: rgba(120, 200, 255, 0.45);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35);
+}
+
+.cyber-tile:active {
+  transform: translateY(-1px);
+}
+
+.cyber-tile-icon {
+  font-size: clamp(40px, 8vw, 56px);
+  color: #a8dab5;
+}
+
+.cyber-tile-label {
+  font-family: "Space Mono", monospace;
+  font-weight: 700;
+  font-size: clamp(0.85rem, 2vw, 1.05rem);
+  text-align: center;
+  letter-spacing: 0.02em;
+}
+
+@media (max-width: 720px) {
+  .cyber-home-tiles {
+    grid-template-columns: 1fr;
+    max-width: 400px;
+  }
+}
+
+/* Sub-screens: QR + passcode */
+.cyber-subscreen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-height: 100dvh;
+  width: 100%;
+  padding: 20px 20px 40px;
+  box-sizing: border-box;
+}
+
+.cyber-back {
+  align-self: flex-start;
+  margin-bottom: 8px;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.08);
+  color: #b8d4c0;
+  font-family: "Space Mono", monospace;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.cyber-back:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.cyber-subscreen-title {
+  margin: 12px 0 8px;
+  font-family: "Space Mono", monospace;
+  font-size: clamp(1.2rem, 3.5vw, 1.75rem);
+  color: #e8f5e9;
+  text-align: center;
+}
+
+.cyber-subscreen-hint {
+  margin: 0 0 20px;
+  max-width: 520px;
+  text-align: center;
+  color: rgba(200, 220, 210, 0.75);
+  font-size: 0.88rem;
+  line-height: 1.4;
+}
+
+.cyber-camera-frame {
+  width: min(92vw, 640px);
+  aspect-ratio: 16 / 10;
+  border-radius: 16px;
+  overflow: hidden;
+  border: 2px solid rgba(168, 218, 181, 0.25);
+  background: rgba(0, 0, 0, 0.35);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+.cyber-camera-placeholder {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: rgba(255, 255, 255, 0.45);
+}
+
+.cyber-camera-placeholder p {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.cyber-camera-icon {
+  font-size: 48px;
+  opacity: 0.5;
+}
+
+.cyber-camera-badge {
+  margin-top: 8px;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(255, 180, 80, 0.15);
+  color: #f0c080;
+}
+
+.cyber-simulate-panel {
+  margin-top: 28px;
+  width: min(92vw, 640px);
+}
+
+.cyber-simulate-label {
+  display: block;
+  font-size: 0.8rem;
+  color: rgba(200, 220, 210, 0.8);
+  margin-bottom: 8px;
+}
+
+.cyber-simulate-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.cyber-simulate-input {
+  flex: 1 1 200px;
+  min-width: 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.35);
+  color: #e8ece9;
+  font-family: "Space Mono", monospace;
+  font-size: 0.9rem;
+}
+
+.cyber-primary-btn {
+  padding: 12px 20px;
+  border-radius: 12px;
+  border: 1px solid rgba(120, 200, 160, 0.45);
+  background: rgba(40, 100, 70, 0.5);
+  color: #e8f5e9;
+  font-family: "Space Mono", monospace;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.cyber-primary-btn:hover {
+  background: rgba(50, 130, 90, 0.55);
+}
+
+.cyber-error {
+  color: #ffb4a8;
+  font-size: 0.85rem;
+  margin: 10px 0 0;
+}
+
+.cyber-simulate-hint {
+  margin: 18px 0 8px;
+  font-size: 0.78rem;
+  color: rgba(200, 220, 210, 0.55);
+}
+
+.cyber-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.cyber-chip {
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.06);
+  color: #c8e6c9;
+  font-size: 0.72rem;
+  font-family: "Space Mono", monospace;
+  cursor: pointer;
+}
+
+.cyber-chip:hover {
+  border-color: rgba(168, 218, 181, 0.35);
+}
+
+/* Passcode */
+.cyber-passcode-screen {
+  justify-content: flex-start;
+  padding-top: 16px;
+}
+
+.cyber-passcode-slots {
+  display: flex;
+  gap: 12px;
+  margin: 24px 0 16px;
+}
+
+.cyber-passcode-slot {
+  width: clamp(40px, 10vw, 52px);
+  height: clamp(52px, 12vw, 64px);
+  border-radius: 12px;
+  border: 2px solid rgba(168, 218, 181, 0.25);
+  background: rgba(0, 0, 0, 0.3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.5rem;
+  color: #e8f5e9;
+}
+
+.cyber-passcode-slot.filled {
+  border-color: rgba(120, 200, 255, 0.45);
+}
+
+.cyber-keypad {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 72px));
+  gap: 12px;
+  margin-top: 20px;
+  justify-content: center;
+}
+
+.cyber-key {
+  height: 56px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.08);
+  color: #e8ece9;
+  font-family: "Space Mono", monospace;
+  font-size: 1.25rem;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cyber-key:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.cyber-key-enter {
+  background: rgba(40, 120, 80, 0.45);
+  border-color: rgba(120, 200, 160, 0.4);
+}
+
+.cyber-key-back .material-symbols-outlined {
+  font-size: 22px;
+}
+
+/* Virtual receptionist header variant */
+.cyber-virtual-header {
+  text-align: center;
+  padding: 20px 16px 8px;
+}
+
+.cyber-virtual-title {
+  margin: 0;
+  font-family: "Space Mono", monospace;
+  font-size: clamp(1.1rem, 3vw, 1.5rem);
+  font-weight: 700;
+  color: #e8f5e9;
+  letter-spacing: 0.06em;
+}
+
+.cyber-virtual-sub {
+  margin: 8px 0 0;
+  font-size: 0.82rem;
+  color: rgba(200, 220, 210, 0.65);
+}
+
+.cyber-virtual-back {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  z-index: 5;
+}
+
+.cyber-dev-hint {
+  margin-top: 28px;
+  max-width: 400px;
+  font-size: 0.75rem;
+  color: rgba(200, 220, 210, 0.45);
+}
+
+.cyber-dev-hint summary {
+  cursor: pointer;
+  color: rgba(200, 220, 210, 0.65);
+}
+
+.cyber-dev-hint-list {
+  margin: 8px 0 0;
+  padding-left: 1.2rem;
+  line-height: 1.5;
+}

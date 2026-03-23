@@ -36,6 +36,14 @@ export type UseLiveAPIResults = {
   assistantAudioPlaying: boolean;
   /** Ref to real-time lip sync frequency data (read in useFrame, no re-renders) */
   lipSyncRef: React.MutableRefObject<LipSyncData>;
+  /**
+   * Analyser on the assistant playback chain (gain → analyser → speakers).
+   * Populated after the audio output context initializes; read in rAF for bar visualizers.
+   */
+  assistantOutputAnalyserRef: React.MutableRefObject<AnalyserNode | null>;
+  /** Visitor microphone level from ControlTray (0..1), used for visitor-reactive visuals. */
+  userInputVolume: number;
+  setUserInputVolume: (value: number) => void;
 };
 
 const MAX_RECONNECT_ATTEMPTS = 3;
@@ -44,12 +52,14 @@ const RECONNECT_BASE_DELAY_MS = 1500;
 export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
   const client = useMemo(() => new GenAILiveClient(options), [options]);
   const audioStreamerRef = useRef<AudioStreamer | null>(null);
+  const assistantOutputAnalyserRef = useRef<AnalyserNode | null>(null);
 
   const [model, setModel] = useState<string>("models/gemini-2.0-flash-exp");
   const [config, setConfig] = useState<LiveConnectConfig>({});
   const [connected, setConnected] = useState(false);
   const [volume, setVolume] = useState(0);
   const [assistantAudioPlaying, setAssistantAudioPlaying] = useState(false);
+  const [userInputVolume, setUserInputVolume] = useState(0);
 
   const intentionalDisconnectRef = useRef(false);
   const reconnectAttemptsRef = useRef(0);
@@ -77,6 +87,7 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
       audioContext({ id: "audio-out" }).then(async (audioCtx: AudioContext) => {
         const streamer = new AudioStreamer(audioCtx);
         audioStreamerRef.current = streamer;
+        assistantOutputAnalyserRef.current = streamer.analyserNode;
         streamer.onPlaybackStart = () => setAssistantAudioPlaying(true);
         streamer.onPlaybackStop = () => setAssistantAudioPlaying(false);
         streamer.onComplete = () => setAssistantAudioPlaying(false);
@@ -235,5 +246,8 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
     volume,
     assistantAudioPlaying,
     lipSyncRef,
+    assistantOutputAnalyserRef,
+    userInputVolume,
+    setUserInputVolume,
   };
 }

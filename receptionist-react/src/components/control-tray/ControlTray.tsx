@@ -32,6 +32,13 @@ export type ControlTrayProps = {
   supportsVideo: boolean;
   onVideoStreamChange?: (stream: MediaStream | null) => void;
   enableEditingSettings?: boolean;
+  /** When false, hide play/pause connect control (e.g. kiosk auto-connects). Mic + volume stay visible. */
+  showConnectionToggle?: boolean;
+  /**
+   * When true, hide the entire control bar (mic, volume pulse, connect). Audio capture still runs in the background.
+   * Use for kiosk “orb only” UX; mic errors still show if needed.
+   */
+  hideControls?: boolean;
 };
 
 type MediaStreamButtonProps = {
@@ -64,6 +71,8 @@ function ControlTray({
   onVideoStreamChange = () => {},
   supportsVideo,
   enableEditingSettings,
+  showConnectionToggle = true,
+  hideControls = false,
 }: ControlTrayProps) {
   const videoStreams = [useWebcam(), useScreenCapture()];
   const [activeVideoStream, setActiveVideoStream] =
@@ -72,13 +81,16 @@ function ControlTray({
   const [inVolume, setInVolume] = useState(0);
   const [audioRecorder] = useState(() => new AudioRecorder());
   const [muted, setMuted] = useState(false);
+  const [micError, setMicError] = useState<string | null>(null);
   const renderCanvasRef = useRef<HTMLCanvasElement>(null);
   const connectButtonRef = useRef<HTMLButtonElement>(null);
   const autoStartInFlightRef = useRef(false);
   const wasConnectedRef = useRef(false);
 
-  const { client, connected, connect, disconnect, volume } =
+  const { client, connected, connect, disconnect, volume, assistantAudioPlaying, setUserInputVolume } =
     useLiveAPIContext();
+  const assistantSpeakingRef = useRef(false);
+  assistantSpeakingRef.current = assistantAudioPlaying;
 
   useEffect(() => {
     if (!connected && connectButtonRef.current) {
@@ -90,10 +102,20 @@ function ControlTray({
       "--volume",
       `${Math.max(5, Math.min(inVolume * 200, 8))}px`
     );
-  }, [inVolume]);
+    setUserInputVolume(Math.max(0, Math.min(1, inVolume)));
+  }, [inVolume, setUserInputVolume]);
+
+  useEffect(() => {
+    if (!connected || muted) {
+      setUserInputVolume(0);
+    }
+  }, [connected, muted, setUserInputVolume]);
 
   useEffect(() => {
     const onData = (base64: string) => {
+      if (assistantSpeakingRef.current) {
+        return;
+      }
       if (!connected || client.status !== "connected") {
         return;
       }
@@ -105,9 +127,17 @@ function ControlTray({
       ]);
     };
     if (connected && !muted && audioRecorder) {
-      audioRecorder.on("data", onData).on("volume", setInVolume).start();
+      setMicError(null);
+      audioRecorder.off("data", onData).off("volume", setInVolume);
+      audioRecorder.on("data", onData).on("volume", setInVolume);
+      void audioRecorder.start().catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        setMicError(msg || "Microphone could not be opened.");
+      });
     } else {
       audioRecorder.stop();
+      setMicError(null);
+      audioRecorder.off("data", onData).off("volume", setInVolume);
     }
     return () => {
       audioRecorder.off("data", onData).off("volume", setInVolume);
@@ -256,59 +286,85 @@ function ControlTray({
     onVideoStreamChange,
   ]);
 
+  const micErrorNode =
+    micError && hideControls ? (
+      <div className="control-tray-mic-error control-tray-mic-error--floating" role="alert">
+        {micError}
+      </div>
+    ) : micError ? (
+      <div className="control-tray-mic-error" role="alert">
+        {micError}
+      </div>
+    ) : null;
+
+  if (hideControls) {
+    return (
+      <>
+        <canvas style={{ display: "none" }} ref={renderCanvasRef} />
+        {micErrorNode}
+        {enableEditingSettings ? <SettingsDialog /> : null}
+      </>
+    );
+  }
+
   return (
     <section className="control-tray">
       <canvas style={{ display: "none" }} ref={renderCanvasRef} />
-      <nav className={cn("actions-nav", { disabled: !connected })}>
-        <button
-          className={cn("action-button mic-button")}
-          onClick={() => setMuted(!muted)}
-        >
-          {!muted ? (
-            <span className="material-symbols-outlined filled">mic</span>
-          ) : (
-            <span className="material-symbols-outlined filled">mic_off</span>
-          )}
-        </button>
-
-        <div className="action-button no-action outlined">
-          <AudioPulse volume={volume} active={connected} hover={false} />
-        </div>
-
-        {supportsVideo && (
-          <>
-            <MediaStreamButton
-              isStreaming={screenCapture.isStreaming}
-              start={changeStreams(screenCapture)}
-              stop={changeStreams()}
-              onIcon="cancel_presentation"
-              offIcon="present_to_all"
-            />
-            <MediaStreamButton
-              isStreaming={webcam.isStreaming}
-              start={changeStreams(webcam)}
-              stop={changeStreams()}
-              onIcon="videocam_off"
-              offIcon="videocam"
-            />
-          </>
-        )}
-        {children}
-      </nav>
-
-      <div className={cn("connection-container", { connected })}>
-        <div className="connection-button-container">
+      {micErrorNode}
+      <div className="control-tray-row">
+        <nav className={cn("actions-nav", { disabled: !connected })}>
           <button
-            ref={connectButtonRef}
-            className={cn("action-button connect-toggle", { connected })}
-            onClick={connected ? disconnect : connect}
+            className={cn("action-button mic-button")}
+            onClick={() => setMuted(!muted)}
           >
-            <span className="material-symbols-outlined filled">
-              {connected ? "pause" : "play_arrow"}
-            </span>
+            {!muted ? (
+              <span className="material-symbols-outlined filled">mic</span>
+            ) : (
+              <span className="material-symbols-outlined filled">mic_off</span>
+            )}
           </button>
-        </div>
-        <span className="text-indicator">Streaming</span>
+
+          <div className="action-button no-action outlined">
+            <AudioPulse volume={volume} active={connected} hover={false} />
+          </div>
+
+          {supportsVideo && (
+            <>
+              <MediaStreamButton
+                isStreaming={screenCapture.isStreaming}
+                start={changeStreams(screenCapture)}
+                stop={changeStreams()}
+                onIcon="cancel_presentation"
+                offIcon="present_to_all"
+              />
+              <MediaStreamButton
+                isStreaming={webcam.isStreaming}
+                start={changeStreams(webcam)}
+                stop={changeStreams()}
+                onIcon="videocam_off"
+                offIcon="videocam"
+              />
+            </>
+          )}
+          {children}
+        </nav>
+
+        {showConnectionToggle ? (
+          <div className={cn("connection-container", { connected })}>
+            <div className="connection-button-container">
+              <button
+                ref={connectButtonRef}
+                className={cn("action-button connect-toggle", { connected })}
+                onClick={connected ? disconnect : connect}
+              >
+                <span className="material-symbols-outlined filled">
+                  {connected ? "pause" : "play_arrow"}
+                </span>
+              </button>
+            </div>
+            <span className="text-indicator">Streaming</span>
+          </div>
+        ) : null}
       </div>
       {enableEditingSettings ? <SettingsDialog /> : ""}
     </section>

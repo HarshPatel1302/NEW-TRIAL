@@ -8,7 +8,7 @@ alwaysApply: true
 
 ## Project Overview
 
-This is a production Virtual Receptionist kiosk application. The frontend is React + TypeScript with a 3D avatar (Three.js / React Three Fiber), real-time voice via Google Gemini Live API, and lip-sync. The backend is Express + PostgreSQL. Two main flows: **visitor check-in** and **delivery/parcel handling**.
+This is a production **Cyber One** kiosk: React + TypeScript, **ElevenLabs-style orb** (React Three Fiber shader orb) for the AI agent, optional **QR / passcode** pre-check paths, and real-time voice via **Google Gemini Live API**. Backend is Express + PostgreSQL. Main Live flows: **visitor check-in** and **delivery/parcel handling**.
 
 ## Critical Files
 
@@ -21,7 +21,9 @@ This is a production Virtual Receptionist kiosk application. The frontend is Rea
 - `receptionist-react/src/hooks/use-live-api.ts` — Gemini Live API connection
 - `receptionist-react/src/lib/genai-live-client.ts` — WebSocket client for Gemini
 - `receptionist-react/src/hooks/use-webcam.ts` — webcam access
-- `receptionist-react/src/components/control-tray/ControlTray.tsx` — connect/disconnect, webcam/screen controls
+- `receptionist-react/src/components/control-tray/ControlTray.tsx` — connect/disconnect, mic capture (often hidden on kiosk)
+- `receptionist-react/src/kiosk/` — home tiles, QR simulation, passcode entry, dummy pre-registered visitors
+- `receptionist-react/src/components/Orb/` — audio-reactive orb UI
 - `backend/src/server.js` — Express API routes
 
 ## Safety Rules

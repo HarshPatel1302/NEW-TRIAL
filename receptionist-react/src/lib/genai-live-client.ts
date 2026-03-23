@@ -15,7 +15,6 @@
  */
 
 import {
-  Content,
   GoogleGenAI,
   LiveCallbacks,
   LiveClientToolResponse,
@@ -244,7 +243,20 @@ export class GenAILiveClient extends EventEmitter<LiveClientEventTypes> {
         this.emit("turncomplete");
       }
 
-      if ("modelTurn" in serverContent) {
+      if ("modelTurn" in serverContent || serverContent.inputTranscription || serverContent.outputTranscription) {
+        const content: LiveServerContent = {};
+        let shouldEmitContent = false;
+
+        if (serverContent.inputTranscription) {
+          content.inputTranscription = serverContent.inputTranscription;
+          shouldEmitContent = true;
+        }
+
+        if (serverContent.outputTranscription) {
+          content.outputTranscription = serverContent.outputTranscription;
+          shouldEmitContent = true;
+        }
+
         let parts: Part[] = serverContent.modelTurn?.parts || [];
 
         // when its audio that is returned for modelTurn
@@ -264,15 +276,15 @@ export class GenAILiveClient extends EventEmitter<LiveClientEventTypes> {
             this.log(`server.audio`, `buffer (${data.byteLength})`);
           }
         });
-        if (!otherParts.length) {
-          return;
+        if (otherParts.length) {
+          parts = otherParts;
+          content.modelTurn = { parts };
+          shouldEmitContent = true;
         }
-
-        parts = otherParts;
-
-        const content: { modelTurn: Content } = { modelTurn: { parts } };
-        this.emit("content", content);
-        this.log(`server.content`, message);
+        if (shouldEmitContent) {
+          this.emit("content", content);
+          this.log(`server.content`, message);
+        }
       }
     } else {
       console.log("received unmatched message", message);

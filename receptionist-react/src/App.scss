@@ -180,11 +180,25 @@ body {
   align-items: center;
   min-height: 100dvh;
   width: 100vw;
-  background: linear-gradient(170deg, #0a1a0f 0%, #101c14 40%, #141e18 100%);
+  background:
+    radial-gradient(ellipse 120% 80% at 50% -20%, rgba(100, 180, 140, 0.12), transparent 50%),
+    radial-gradient(ellipse 80% 60% at 100% 50%, rgba(68, 120, 220, 0.08), transparent 45%),
+    linear-gradient(168deg, #050d0a 0%, #0c1812 38%, #0f1f18 100%);
   color: #e8ece9;
   position: relative;
   overflow: hidden;
   padding: 0;
+}
+
+.kiosk-screen::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+  background-size: 24px 24px;
+  mask-image: radial-gradient(ellipse 70% 70% at 50% 35%, black 20%, transparent 70%);
+  pointer-events: none;
+  z-index: 0;
 }
 
 /* ── Title ────────────────────────────────────────────────── */
@@ -192,26 +206,83 @@ body {
 .kiosk-header {
   width: 100%;
   text-align: center;
-  padding: 28px 20px 0;
+  padding: 22px 20px 8px;
   flex-shrink: 0;
   z-index: 2;
+  position: relative;
+}
+
+.kiosk-eyebrow {
+  margin: 0 0 6px;
+  font-size: clamp(0.65rem, 1.5vw, 0.75rem);
+  font-weight: 600;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: rgba(168, 218, 181, 0.55);
 }
 
 .kiosk-title {
   font-family: "Space Mono", monospace;
-  font-size: clamp(1.2rem, 2.5vw, 1.8rem);
+  font-size: clamp(1.5rem, 4vw, 2.1rem);
   font-weight: 700;
-  letter-spacing: 0.04em;
-  color: #c8e6c9;
+  letter-spacing: 0.06em;
+  color: #e8f5e9;
   margin: 0;
+  text-shadow: 0 0 40px rgba(168, 218, 181, 0.25);
 }
 
-/* ── Avatar Frame (upper-body crop) ──────────────────────── */
+.kiosk-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+  padding: 8px 16px;
+  border-radius: 999px;
+  font-size: clamp(0.72rem, 1.6vw, 0.85rem);
+  color: rgba(232, 245, 233, 0.82);
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(168, 218, 181, 0.12);
+  backdrop-filter: blur(10px);
+}
+
+.kiosk-status[data-live="true"] {
+  border-color: rgba(100, 200, 140, 0.35);
+  background: rgba(40, 90, 60, 0.2);
+}
+
+.kiosk-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.25);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.08);
+  flex-shrink: 0;
+}
+
+.kiosk-status[data-live="true"] .kiosk-status-dot {
+  background: #6fcf97;
+  box-shadow: 0 0 12px rgba(111, 207, 151, 0.75);
+  animation: kiosk-pulse 2s ease-in-out infinite;
+}
+
+@keyframes kiosk-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.85;
+    transform: scale(1.08);
+  }
+}
+
+/* ── Orb stage ───────────────────────────────────────────── */
 
 .kiosk-avatar-frame {
   flex: 1 1 0;
   display: flex;
-  align-items: flex-end;
+  align-items: center;
   justify-content: center;
   width: 100%;
   min-height: 0;
@@ -220,34 +291,77 @@ body {
 }
 
 .kiosk-avatar-crop {
-  width: min(520px, 90vw);
-  height: min(460px, 52vh);
-  overflow: hidden;
-  border-radius: 24px 24px 0 0;
+  width: min(540px, 92vw);
+  min-height: min(400px, 48vh);
+  overflow: visible;
+  border-radius: 28px;
   position: relative;
-  background: radial-gradient(ellipse at 50% 80%, rgba(16, 40, 24, 0.6) 0%, transparent 70%);
+  padding: 20px 16px 24px;
+  background: rgba(8, 20, 14, 0.45);
+  border: 1px solid rgba(168, 218, 181, 0.14);
+  box-shadow:
+    0 24px 48px rgba(0, 0, 0, 0.35),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(16px);
 }
 
-.kiosk-avatar-crop .avatar-container {
+/* ElevenLabs-style orb host (replaces GLB avatar) */
+.kiosk-orb-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  padding: 8px 0 4px;
+  overflow: visible;
+}
+
+.kiosk-orb-ring {
+  width: min(300px, 56vw);
+  height: min(300px, 56vw);
+  max-width: 320px;
+  max-height: 320px;
+  border-radius: 50%;
+  padding: 4px;
+  background: linear-gradient(135deg, rgba(168, 218, 181, 0.5), rgba(68, 141, 255, 0.35));
+  box-shadow:
+    inset 0 2px 12px rgba(0, 0, 0, 0.3),
+    0 0 0 1px rgba(255, 255, 255, 0.06),
+    0 20px 56px rgba(0, 0, 0, 0.45),
+    0 0 80px rgba(100, 180, 255, 0.12);
+}
+
+.kiosk-orb-inner {
   width: 100%;
-  height: 140%;
-  position: absolute;
-  top: -10%;
-  left: 0;
+  height: 100%;
+  border-radius: 50%;
+  overflow: hidden;
+  background: radial-gradient(circle at 32% 22%, rgba(255, 255, 255, 0.12), transparent 50%);
+  box-shadow: inset 0 0 20px rgba(0, 0, 0, 0.45);
 }
 
-/* Counter edge illusion */
-.kiosk-avatar-frame::after {
-  content: "";
-  position: absolute;
-  bottom: 0;
-  left: 50%;
-  transform: translateX(-50%);
-  width: min(560px, 94vw);
-  height: 6px;
-  background: linear-gradient(90deg, transparent, rgba(168, 218, 181, 0.35), transparent);
-  border-radius: 3px;
-  z-index: 3;
+.kiosk-orb-canvas {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 200px;
+}
+
+.kiosk-visitor-transcript {
+  margin: 0;
+  max-width: min(480px, 88vw);
+  padding: 10px 14px;
+  text-align: center;
+  font-size: clamp(0.78rem, 1.85vw, 0.92rem);
+  line-height: 1.42;
+  color: rgba(223, 246, 229, 0.96);
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.62);
+  background: rgba(6, 18, 12, 0.38);
+  border-radius: 12px;
+  border: 1px solid rgba(168, 218, 181, 0.2);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.03),
+    0 4px 18px rgba(0, 0, 0, 0.24);
 }
 
 /* ── Connect / Start Button Area ─────────────────────────── */
@@ -289,20 +403,27 @@ body {
   align-items: center;
   justify-content: center;
   gap: 10px;
-  padding: 20px 12px;
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(168, 218, 181, 0.15);
+  padding: 22px 14px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(168, 218, 181, 0.12);
+  backdrop-filter: blur(12px);
   cursor: pointer;
-  transition: background 0.2s, border-color 0.2s, transform 0.15s;
+  transition:
+    background 0.22s,
+    border-color 0.22s,
+    transform 0.18s,
+    box-shadow 0.22s;
   user-select: none;
-  min-height: 100px;
+  min-height: 108px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
 }
 
 .kiosk-card:hover {
-  background: rgba(168, 218, 181, 0.12);
-  border-color: rgba(168, 218, 181, 0.35);
-  transform: translateY(-2px);
+  background: rgba(168, 218, 181, 0.1);
+  border-color: rgba(168, 218, 181, 0.4);
+  transform: translateY(-3px);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.28);
 }
 
 .kiosk-card:active {
@@ -341,13 +462,14 @@ body {
   }
 
   .kiosk-avatar-crop {
-    height: min(380px, 45vh);
+    min-height: min(360px, 42vh);
+    padding: 14px 12px 18px;
   }
 }
 
 @media (min-height: 900px) {
   .kiosk-avatar-crop {
-    height: min(520px, 55vh);
+    min-height: min(440px, 50vh);
     width: min(580px, 90vw);
   }
 }

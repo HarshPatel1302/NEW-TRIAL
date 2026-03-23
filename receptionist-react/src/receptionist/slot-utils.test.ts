@@ -4,25 +4,28 @@ import {
   hasMeaningfulValue,
   isValidVisitorPhone,
   inferActiveFlow,
+  normalizeIndianMobile10,
 } from "./slot-utils";
 
 describe("slot-utils", () => {
   describe("getMissingFieldsBeforePhoto", () => {
-    it("visitor: requires name, phone, came_from, company_to_visit", () => {
+    it("visitor: requires name, phone, came_from, company_to_visit, person_in_company", () => {
       const r = getMissingFieldsBeforePhoto("meet_person", {});
       expect(r.flow).toBe("visitor");
       expect(r.missing).toContain("name");
       expect(r.missing).toContain("phone");
       expect(r.missing).toContain("came_from");
       expect(r.missing).toContain("company_to_visit");
+      expect(r.missing).toContain("person_in_company");
     });
 
-    it("visitor: person_in_company is optional", () => {
+    it("visitor: all required present yields no missing", () => {
       const slots = {
         visitor_name: "Harsh Patel",
         phone: "9876543210",
         came_from: "Walk-in",
         company_to_visit: "Futurescape",
+        person_in_company: "Mihir Jadhav",
       };
       const r = getMissingFieldsBeforePhoto("meet_person", slots);
       expect(r.missing).toHaveLength(0);
@@ -34,6 +37,7 @@ describe("slot-utils", () => {
         phone: "9876543210",
         came_from: "Walk-in",
         meeting_with: "Futurescape",
+        person_in_company: "Someone",
       };
       const r = getMissingFieldsBeforePhoto("meet_person", slots);
       expect(r.missing).toHaveLength(0);
@@ -61,7 +65,7 @@ describe("slot-utils", () => {
   });
 
   describe("getNextSlotToAsk", () => {
-    it("visitor: asks person_in_company after company_to_visit when person missing", () => {
+    it("visitor: asks person_in_company after company when person missing", () => {
       const slots = {
         visitor_name: "Harsh",
         phone: "9876543210",
@@ -71,7 +75,7 @@ describe("slot-utils", () => {
       expect(getNextSlotToAsk("meet_person", slots)).toBe("person_in_company");
     });
 
-    it("visitor: returns null when all required + optional provided", () => {
+    it("visitor: returns null when all required provided", () => {
       const slots = {
         visitor_name: "Harsh",
         phone: "9876543210",
@@ -80,16 +84,6 @@ describe("slot-utils", () => {
         person_in_company: "Mihir",
       };
       expect(getNextSlotToAsk("meet_person", slots)).toBeNull();
-    });
-
-    it("visitor: returns null when person not known (optional)", () => {
-      const slots = {
-        visitor_name: "Harsh",
-        phone: "9876543210",
-        came_from: "Walk-in",
-        company_to_visit: "Futurescape",
-      };
-      expect(getNextSlotToAsk("meet_person", slots)).toBe("person_in_company");
     });
   });
 
@@ -105,10 +99,15 @@ describe("slot-utils", () => {
     });
   });
 
-  describe("isValidVisitorPhone", () => {
-    it("requires 10+ digits", () => {
+  describe("isValidVisitorPhone / normalizeIndianMobile10", () => {
+    it("requires exactly 10 digits", () => {
       expect(isValidVisitorPhone("9876543210")).toBe(true);
       expect(isValidVisitorPhone("987654321")).toBe(false);
+      expect(isValidVisitorPhone("98765432101")).toBe(false);
+    });
+    it("normalizes +91 prefix", () => {
+      expect(normalizeIndianMobile10("+91 98765 43210")).toBe("9876543210");
+      expect(isValidVisitorPhone("+919876543210")).toBe(true);
     });
   });
 

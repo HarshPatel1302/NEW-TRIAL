@@ -43,8 +43,10 @@ export class AudioStreamer {
   private scheduledTime: number = 0;
   // Lower startup buffer for snappier assistant responses
   private initialBufferTime: number = 0.03;
-  // Web Audio API nodes. source => gain => destination
+  // Web Audio API nodes. source => gain => analyser => destination
   public gainNode: GainNode;
+  /** Taps assistant output for spectrum / bar visualizers (see AssistantBarVisualizer). */
+  public analyserNode: AnalyserNode;
   public source: AudioBufferSourceNode;
   private endOfQueueAudioSource: AudioBufferSourceNode | null = null;
   private playbackStarted = false;
@@ -68,8 +70,12 @@ export class AudioStreamer {
 
   constructor(public context: AudioContext) {
     this.gainNode = this.context.createGain();
+    this.analyserNode = this.context.createAnalyser();
+    this.analyserNode.fftSize = 256;
+    this.analyserNode.smoothingTimeConstant = 0.62;
     this.source = this.context.createBufferSource();
-    this.gainNode.connect(this.context.destination);
+    this.gainNode.connect(this.analyserNode);
+    this.analyserNode.connect(this.context.destination);
     this.addPCM16 = this.addPCM16.bind(this);
   }
 
@@ -278,7 +284,7 @@ export class AudioStreamer {
     setTimeout(() => {
       this.gainNode.disconnect();
       this.gainNode = this.context.createGain();
-      this.gainNode.connect(this.context.destination);
+      this.gainNode.connect(this.analyserNode);
     }, 200);
   }
 

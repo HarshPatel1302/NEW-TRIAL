@@ -13,8 +13,21 @@ export function toPhoneDigits(value: unknown): string {
   return String(value ?? "").replace(/\D/g, "");
 }
 
+/** Normalize to Indian mobile without country code (10 digits). */
+export function normalizeIndianMobile10(value: unknown): string {
+  let d = toPhoneDigits(value);
+  if (d.length >= 12 && d.startsWith("91")) {
+    d = d.slice(-10);
+  }
+  if (d.length === 11 && d.startsWith("0")) {
+    d = d.slice(1);
+  }
+  return d;
+}
+
+/** Indian mobile: exactly 10 digits after normalization (+91 optional). */
 export function isValidVisitorPhone(value: unknown): boolean {
-  return toPhoneDigits(value).length >= 10;
+  return normalizeIndianMobile10(value).length === 10;
 }
 
 export type ActiveReceptionFlow = "visitor" | "delivery";
@@ -86,6 +99,9 @@ export function getMissingFieldsBeforePhoto(
     if (!hasMeaningfulValue(collectedSlots.company_to_visit) && !hasMeaningfulValue(collectedSlots.meeting_with)) {
       missing.push("company_to_visit");
     }
+    if (!hasMeaningfulValue(collectedSlots.person_in_company)) {
+      missing.push("person_in_company");
+    }
   }
 
   return { flow, missing };
@@ -103,14 +119,6 @@ export function getNextSlotToAsk(intent: unknown, collectedSlots: Record<string,
       (slot === "visitor_name" && missing.includes("name")) ||
       (slot === "visitor_name" && missing.includes("delivery_person_name"));
     if (isMissing) return slot;
-  }
-  if (
-    flow === "visitor" &&
-    missing.length === 0 &&
-    !hasMeaningfulValue(collectedSlots.person_in_company) &&
-    hasMeaningfulValue(collectedSlots.company_to_visit)
-  ) {
-    return "person_in_company";
   }
   return missing[0] || null;
 }

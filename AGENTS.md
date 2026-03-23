@@ -2,7 +2,7 @@
 
 ## Project Purpose
 
-Production virtual receptionist kiosk for building lobbies. Visitors interact with a 3D avatar via voice. The system identifies intent (visit, delivery, returning visitor), collects required details, captures a photo, saves the record, and provides lobby instructions.
+Production virtual receptionist kiosk for building lobbies. Visitors interact via **voice** with an **ElevenLabs-style animated orb** (React Three Fiber). The system identifies intent (visit, delivery, returning visitor), collects required details, captures a photo, saves the record, and provides lobby instructions.
 
 ## Tech Stack
 
@@ -30,7 +30,8 @@ Greeting → intent classification → phone lookup → confirm identity → upd
 ```
 receptionist-react/src/          — React frontend
   receptionist/                  — config, tools, intents, database, delivery logic
-  components/                    — Avatar3D, ControlTray, Logger, SidePanel, settings
+  kiosk/                         — Cyber One home / QR / passcode screens + dummy visitor list
+  components/                    — Orb (agent visual), ControlTray, Logger, SidePanel, settings
   hooks/                         — use-live-api, use-webcam, use-screen-capture
   lib/                           — genai-live-client, audio-recorder, audio-streamer
 backend/src/                     — Express API, schema, middleware

@@ -20,7 +20,7 @@ export const TOOLS: Tool[] = [
             },
             {
                 name: "collect_slot_value",
-                description: "Record ONE field the visitor JUST provided. Call ONLY when the visitor has just answered. Never call before asking. Never ask again after status:success for that slot. Use the next_slot in the response to know what to ask next.",
+                description: "Record ONE field the visitor JUST provided. Call ONLY when the visitor has just answered. Never call before asking. Never ask again after status:success for that slot. Use the next_slot in the response to know what to ask next. For phone: Indian mobile must be exactly 10 digits (tool will reject otherwise).",
                 parameters: {
                     type: "OBJECT",
                     properties: {
@@ -51,7 +51,7 @@ export const TOOLS: Tool[] = [
             {
                 name: "request_delivery_approval",
                 description:
-                    "Request delivery decision after collecting delivery details and capturing photo. Current test response should guide to keep parcel at lobby.",
+                    "After all four delivery fields AND delivery person's photo are ready: first tell them in their language to wait in the lobby while you confirm with the company — then call this tool. It requests allow vs lobby-only. When the tool returns, tell them the decision clearly, complete save_visitor_info, then end_interaction.",
                 parameters: {
                     type: "OBJECT",
                     properties: {
@@ -126,7 +126,7 @@ export const TOOLS: Tool[] = [
             },
             {
                 name: "end_interaction",
-                description: "Call this tool to end the conversation and reset the kiosk interface.",
+                description: "Call ONLY after visitor or delivery flow is fully saved and you have spoken the final wait/decision message. Ends the session and returns the kiosk to the home screen.",
                 parameters: {
                     type: "OBJECT",
                     properties: {},
