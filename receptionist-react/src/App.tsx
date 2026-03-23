@@ -933,7 +933,29 @@ function ReceptionistApp() {
             }
 
             const updatedSlots = { ...conversationState.collectedSlots, [slotName]: slotValue };
-            const nextSlot = getNextSlotToAsk(conversationState.intent, updatedSlots);
+            let nextSlot = getNextSlotToAsk(conversationState.intent, updatedSlots);
+            let returningVisitor: Awaited<ReturnType<typeof DatabaseManager.findByPhone>> | null = null;
+            const shouldLookupReturningVisitor =
+              slotName === "phone" &&
+              normalizeIntentName(conversationState.intent || "meet_person") !== "delivery" &&
+              normalizeIndianMobile10(slotValue).length === 10;
+
+            if (shouldLookupReturningVisitor) {
+              const phoneNorm = normalizeIndianMobile10(slotValue);
+              returningVisitor = (await DatabaseManager.findByPhone(phoneNorm)) || null;
+              if (returningVisitor) {
+                updatedSlots.visitor_name = returningVisitor.name;
+                nextSlot = getNextSlotToAsk(conversationState.intent, updatedSlots);
+                setConversationState((prev) => ({
+                  ...prev,
+                  collectedSlots: {
+                    ...prev.collectedSlots,
+                    phone: phoneNorm,
+                    visitor_name: returningVisitor?.name || "",
+                  },
+                }));
+              }
+            }
             const collectedSummary: Record<string, string> = {};
             for (const [k, v] of Object.entries(updatedSlots)) {
               if (hasMeaningfulValue(v) && !["member_ids", "member_lookup_query", "member_match_count", "member_objects_uri", "purpose_category_id", "purpose_category_name", "purpose_sub_category_id", "purpose_sub_category_name"].includes(k)) {
@@ -941,15 +963,34 @@ function ReceptionistApp() {
               }
             }
 
+            const defaultCollectedMessage = nextSlot
+              ? `Collected ${slotName}. Next: ask for ${nextSlot}. Do not ask for ${slotName} again.`
+              : `Collected ${slotName}. All slots complete. Proceed to photo capture.`;
+
             result = {
               status: "success",
               slot: slotName,
               value: slotValue,
               collected_slots: collectedSummary,
               next_slot: nextSlot,
-              message: nextSlot
-                ? `Collected ${slotName}. Next: ask for ${nextSlot}. Do not ask for ${slotName} again.`
-                : `Collected ${slotName}. All slots complete. Proceed to photo capture.`,
+              message: defaultCollectedMessage,
+              ...(shouldLookupReturningVisitor
+                ? returningVisitor
+                  ? {
+                      is_returning: true,
+                      returning_name: returningVisitor.name,
+                      returning_last_visit: returningVisitor.timestamp,
+                      returning_prompt:
+                        `Returning visitor detected (${returningVisitor.name}). Ask politely: ` +
+                        `"Hello again ${returningVisitor.name}. Would you like to visit the same person as last time?" ` +
+                        `Then continue with next required slot ${nextSlot || "as needed"}.`,
+                    }
+                  : {
+                      is_returning: false,
+                      returning_hint:
+                        "Phone verified. No recent match found. Ask for name next and continue normal visitor flow.",
+                    }
+                : {}),
               ...(phoneNeedsMoreDigits
                 ? {
                     partial_phone: true,
@@ -1883,6 +1924,7 @@ function ReceptionistApp() {
         <QrScanScreen
           onBack={() => setKioskRoute("home")}
           onRecognized={(v) => void handlePreRegisteredEntry(v, "qr")}
+          onFallbackToPasscode={() => setKioskRoute("passcode")}
         />
       </div>
     );

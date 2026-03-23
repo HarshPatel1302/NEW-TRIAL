@@ -27,6 +27,7 @@ FLOW:
 
 VISITOR (meet / appointment):
   Required order: phone (10 digits) → name (or check_returning_visitor after phone) → where they came from (came_from) → company they want to visit → person they are meeting at that company (person_in_company is mandatory; if they truly do not know a name, record a short phrase like "Does not know contact name" — never skip the slot).
+  Returning visitor behavior: immediately after valid phone, check if this visitor exists in history. If match exists, greet them warmly ("Hello again ...") and ask if they want to visit the same person/company as last time; still confirm current visit details before save.
   Then: ask them to stand still, call capture_photo, then save_visitor_info.
   After save succeeds: tell them clearly to wait in the lobby while the member is contacted. Then immediately call end_interaction.
 

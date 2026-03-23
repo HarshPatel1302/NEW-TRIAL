@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from "react";
 import {
   CYBER_ONE_PRE_REGISTERED,
-  findVisitorByPasscode,
+  resolveVisitorByPasscode,
   type PreRegisteredVisitor,
 } from "./cyber-one-visitors";
 
@@ -31,12 +31,13 @@ export function PasscodeScreen({ onBack, onSuccess }: Props) {
           setError("Enter all 6 digits.");
           return;
         }
-        const visitor = findVisitorByPasscode(d);
-        if (!visitor) {
-          setError("Invalid passcode.");
-          return;
-        }
-        onSuccess(visitor);
+        void resolveVisitorByPasscode(d).then((visitor) => {
+          if (!visitor) {
+            setError("Invalid passcode.");
+            return;
+          }
+          onSuccess(visitor);
+        });
         return;
       }
       if (digitsRef.current.length >= 6) return;
@@ -55,6 +56,9 @@ export function PasscodeScreen({ onBack, onSuccess }: Props) {
         ← Back
       </button>
       <h1 className="cyber-subscreen-title">Enter your passcode</h1>
+      <p className="cyber-subscreen-hint">
+        Each invite QR has a paired temporary passcode. Use passcode if QR scan fails.
+      </p>
 
       <div className="cyber-passcode-slots" aria-label="Passcode digits">
         {slots.map((ch, i) => (
@@ -80,7 +84,7 @@ export function PasscodeScreen({ onBack, onSuccess }: Props) {
       </div>
 
       <details className="cyber-dev-hint">
-        <summary>Demo passcodes (testing)</summary>
+        <summary>Fallback demo passcodes (only if invite API is unavailable)</summary>
         <ul className="cyber-dev-hint-list">
           {CYBER_ONE_PRE_REGISTERED.map((v) => (
             <li key={v.passcode}>
