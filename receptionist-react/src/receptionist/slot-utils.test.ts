@@ -9,10 +9,9 @@ import {
 
 describe("slot-utils", () => {
   describe("getMissingFieldsBeforePhoto", () => {
-    it("visitor: requires name, phone, came_from, company_to_visit, person_in_company", () => {
+    it("visitor: requires phone, came_from, company_to_visit, person_in_company", () => {
       const r = getMissingFieldsBeforePhoto("meet_person", {});
       expect(r.flow).toBe("visitor");
-      expect(r.missing).toContain("name");
       expect(r.missing).toContain("phone");
       expect(r.missing).toContain("came_from");
       expect(r.missing).toContain("company_to_visit");

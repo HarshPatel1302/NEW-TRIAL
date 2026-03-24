@@ -1,3 +1,9 @@
+import {
+  buildReceptionistHeaders,
+  cubeOneProxyConfigured,
+  receptionistApiBase,
+} from "./cubeone-via-backend";
+
 type ApiEnvelope<T = unknown> = {
   status?: string;
   status_code?: number;
@@ -8,17 +14,6 @@ type ApiEnvelope<T = unknown> = {
 type LoginEnvelope = ApiEnvelope<{ access_token?: string; token?: string }>;
 type MemberListEnvelope = ApiEnvelope<MemberUnitRecord[]>;
 
-type MemberUnitRecord = {
-  id?: number;
-  fk_unit_id?: number;
-  member_name?: string;
-  building_unit?: string;
-  unit_flat_number?: string;
-  soc_building_name?: string;
-  member_details?: MemberDetailRecord[];
-  [key: string]: unknown;
-};
-
 type MemberDetailRecord = {
   member_id?: number | string;
   member_first_name?: string;
@@ -27,6 +22,17 @@ type MemberDetailRecord = {
   member_mobile_number?: string;
   member_type_name?: string;
   user_id?: number | string | null;
+  [key: string]: unknown;
+};
+
+type MemberUnitRecord = {
+  id?: number;
+  fk_unit_id?: number;
+  member_name?: string;
+  building_unit?: string;
+  unit_flat_number?: string;
+  soc_building_name?: string;
+  member_details?: MemberDetailRecord[];
   [key: string]: unknown;
 };
 
@@ -64,8 +70,7 @@ const MEMBER_LIST_API_URL = String(
 const MEMBER_LIST_COMPANY_ID = String(process.env.REACT_APP_WALKIN_COMPANY_ID || "8196").trim();
 
 const REQUEST_TIMEOUT_MS = 4000;
-const CACHE_TTL_MS = 5 * 60 * 1000;
-const MIN_SCORE_FOR_MATCH = 45;
+const CACHE_TTL_MS = 0;
 
 let authToken: string | null = null;
 let authPromise: Promise<string> | null = null;
@@ -83,19 +88,15 @@ function toDisplayText(input: unknown) {
   return String(input || "").trim();
 }
 
-function tokenize(input: string) {
-  return normalizeText(input)
-    .split(" ")
-    .map((token) => token.trim())
-    .filter((token) => token.length >= 2);
-}
-
 function toNumber(value: unknown) {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
 }
 
 function hasMemberApiConfig() {
+  if (cubeOneProxyConfigured()) {
+    return true;
+  }
   return !!(
     GATE_LOGIN_API_URL &&
     GATE_LOGIN_USERNAME &&
@@ -189,6 +190,64 @@ async function fetchMemberDirectoryRows(forceRefresh = false): Promise<{
       statusCode: 200,
       message: "cached",
     };
+  }
+
+  if (cubeOneProxyConfigured()) {
+    const base = receptionistApiBase();
+    const proxyUrl = `${base}/integrations/cubeone/member-list?company_id=${encodeURIComponent(
+      MEMBER_LIST_COMPANY_ID
+    )}`;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const controller = new AbortController();
+      const timeout: ReturnType<typeof setTimeout> = setTimeout(
+        () => controller.abort(),
+        REQUEST_TIMEOUT_MS
+      );
+      try {
+        const response = await fetch(proxyUrl, {
+          method: "GET",
+          headers: buildReceptionistHeaders(),
+          signal: controller.signal,
+        });
+        const payload = (await parseEnvelopeSafe(response)) as MemberListEnvelope;
+        const statusCode = response.status;
+        if (!response.ok) {
+          return {
+            configured: true,
+            ok: false,
+            rows: [],
+            statusCode,
+            message: String(
+              payload?.message || `Member list proxy failed (HTTP ${statusCode})`
+            ),
+          };
+        }
+        const rows = Array.isArray(payload?.data) ? payload.data : [];
+        memberCache = {
+          fetchedAt: Date.now(),
+          rows,
+        };
+        return {
+          configured: true,
+          ok: true,
+          rows,
+          statusCode,
+          message: String(payload?.message || "ok"),
+        };
+      } catch (error: any) {
+        if (attempt === 0) {
+          continue;
+        }
+        return {
+          configured: true,
+          ok: false,
+          rows: [],
+          message: String(error?.message || "Member list proxy request failed"),
+        };
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
   }
 
   const requestUrl = new URL(MEMBER_LIST_API_URL);
@@ -289,79 +348,6 @@ function buildMemberName(detail: MemberDetailRecord, unit: MemberUnitRecord) {
   }
 
   return toDisplayText(unit.member_name) || "Unknown member";
-}
-
-function memberToSearchFields(member: MatchedMember) {
-  return [
-    member.member_name,
-    member.unit_member_name,
-    member.building_unit,
-    member.unit_flat_number,
-    member.soc_building_name,
-    member.member_email_id,
-    member.member_mobile_number,
-  ]
-    .map((value) => normalizeText(value))
-    .filter(Boolean);
-}
-
-function scoreMember(member: MatchedMember, query: string) {
-  const normalizedQuery = normalizeText(query);
-  if (!normalizedQuery) return 0;
-
-  const queryTokens = tokenize(normalizedQuery);
-  const fields = memberToSearchFields(member);
-
-  const normalizedName = normalizeText(member.member_name);
-  const normalizedUnitMemberName = normalizeText(member.unit_member_name);
-  const normalizedBuildingUnit = normalizeText(member.building_unit);
-  const normalizedFlat = normalizeText(member.unit_flat_number);
-
-  let score = 0;
-
-  if (normalizedName === normalizedQuery) {
-    score += 180;
-  }
-
-  if (normalizedUnitMemberName === normalizedQuery) {
-    score += 130;
-  }
-
-  if (normalizedBuildingUnit === normalizedQuery || normalizedFlat === normalizedQuery) {
-    score += 120;
-  }
-
-  fields.forEach((field) => {
-    if (!field) return;
-    if (field.includes(normalizedQuery)) {
-      score += 90;
-    }
-  });
-
-  queryTokens.forEach((token) => {
-    if (token.length < 2) return;
-
-    const tokenInFields = fields.some((field) => field.includes(token));
-    if (tokenInFields) {
-      score += 14;
-    }
-
-    if (normalizedFlat === token || normalizedBuildingUnit.includes(token)) {
-      score += 24;
-    }
-  });
-
-  const digitTokens = normalizedQuery.match(/\d+/g) || [];
-  if (digitTokens.length > 0) {
-    const unitDigits = `${normalizedBuildingUnit} ${normalizedFlat}`;
-    digitTokens.forEach((digits) => {
-      if (unitDigits.includes(digits)) {
-        score += 35;
-      }
-    });
-  }
-
-  return score;
 }
 
 function flattenMembers(rows: MemberUnitRecord[]): MatchedMember[] {
@@ -466,7 +452,7 @@ export async function resolveMembersForDestination(
     };
   }
 
-  const directory = await fetchMemberDirectoryRows();
+  const directory = await fetchMemberDirectoryRows(true);
   if (!directory.ok) {
     return {
       configured: directory.configured,
@@ -481,27 +467,37 @@ export async function resolveMembersForDestination(
   }
 
   const members = flattenMembers(directory.rows);
-  const scored = members
-    .map((member) => ({
-      member,
-      score: scoreMember(member, scoringQuery),
-    }))
-    .filter((entry) => entry.score >= MIN_SCORE_FOR_MATCH)
-    .sort((a, b) => b.score - a.score);
+  const queryLower = normalizeText(scoringQuery);
+  const queryDigits = scoringQuery.replace(/\D/g, "");
+  const maxResults = Math.max(1, Math.min(Number(options.maxResults || 5), 10));
+  const matched = members.filter((member) => {
+    const fields = [
+      member.member_name,
+      member.unit_member_name,
+      member.building_unit,
+      member.unit_flat_number,
+      member.soc_building_name,
+    ]
+      .map((v) => normalizeText(v))
+      .filter(Boolean);
+    const hasTextMatch = fields.some((field) => field.includes(queryLower));
+    const hasDigitMatch =
+      !!queryDigits &&
+      [
+        String(member.building_unit || ""),
+        String(member.unit_flat_number || ""),
+      ].some((v) => v.replace(/\D/g, "").includes(queryDigits));
+    return hasTextMatch || hasDigitMatch;
+  });
 
-  const dedupedMap = new Map<number, { member: MatchedMember; score: number }>();
-  scored.forEach((entry) => {
-    const existing = dedupedMap.get(entry.member.member_id);
-    if (!existing || entry.score > existing.score) {
-      dedupedMap.set(entry.member.member_id, entry);
+  const dedupedMap = new Map<number, MatchedMember>();
+  matched.forEach((member) => {
+    if (!dedupedMap.has(member.member_id)) {
+      dedupedMap.set(member.member_id, member);
     }
   });
 
-  const maxResults = Math.max(1, Math.min(Number(options.maxResults || 5), 10));
-  const deduped = Array.from(dedupedMap.values())
-    .sort((a, b) => b.score - a.score)
-    .slice(0, maxResults)
-    .map((entry) => entry.member);
+  const deduped = Array.from(dedupedMap.values()).slice(0, maxResults);
 
   return {
     configured: true,

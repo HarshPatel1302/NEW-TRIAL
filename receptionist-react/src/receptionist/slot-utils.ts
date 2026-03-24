@@ -87,9 +87,6 @@ export function getMissingFieldsBeforePhoto(
       missing.push("recipient_name");
     }
   } else {
-    if (!hasMeaningfulValue(collectedSlots.visitor_name) && !hasMeaningfulValue(collectedSlots.name)) {
-      missing.push("name");
-    }
     if (!isValidVisitorPhone(collectedSlots.phone || collectedSlots.visitor_phone || "")) {
       missing.push("phone");
     }
@@ -109,14 +106,13 @@ export function getMissingFieldsBeforePhoto(
 
 export function getNextSlotToAsk(intent: unknown, collectedSlots: Record<string, string>): string | null {
   const { flow, missing } = getMissingFieldsBeforePhoto(intent, collectedSlots);
-  const visitorOrder = ["phone", "visitor_name", "came_from", "company_to_visit", "person_in_company"];
+  const visitorOrder = ["phone", "came_from", "company_to_visit", "person_in_company"];
   const deliveryOrder = ["visitor_name", "delivery_company", "recipient_company", "recipient_name"];
   const order = flow === "delivery" ? deliveryOrder : visitorOrder;
 
   for (const slot of order) {
     const isMissing =
       missing.includes(slot) ||
-      (slot === "visitor_name" && missing.includes("name")) ||
       (slot === "visitor_name" && missing.includes("delivery_person_name"));
     if (isMissing) return slot;
   }

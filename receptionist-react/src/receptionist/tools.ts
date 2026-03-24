@@ -51,7 +51,7 @@ export const TOOLS: Tool[] = [
             {
                 name: "request_delivery_approval",
                 description:
-                    "After all four delivery fields AND delivery person's photo are ready: first tell them in their language to wait in the lobby while you confirm with the company — then call this tool. It requests allow vs lobby-only. When the tool returns, tell them the decision clearly, complete save_visitor_info, then end_interaction.",
+                    "After all four delivery fields AND delivery person's photo are ready: tell them once in English to wait in the lobby while you confirm — then call this tool. When the tool returns, state the decision once in English, complete save_visitor_info, then end_interaction once. No repeated phrases.",
                 parameters: {
                     type: "OBJECT",
                     properties: {
@@ -79,7 +79,7 @@ export const TOOLS: Tool[] = [
             },
             {
                 name: "save_visitor_info",
-                description: "Save the complete visitor's information to the database after all required slots are collected and a visitor photo has been captured.",
+                description: "Save the visitor ONCE after photo capture. Call at most one time per session — never call again after status success (causes loops). After success, say one short closing line in English, then call end_interaction only. External visitor log + notification APIs run automatically; do not wait by repeating speech.",
                 parameters: {
                     type: "OBJECT",
                     properties: {
@@ -126,7 +126,7 @@ export const TOOLS: Tool[] = [
             },
             {
                 name: "end_interaction",
-                description: "Call ONLY after visitor or delivery flow is fully saved and you have spoken the final wait/decision message. Ends the session and returns the kiosk to the home screen.",
+                description: "Call ONLY once after save_visitor_info succeeds and you have said the final line exactly once in English (e.g. wait in lobby or delivery decision). Do not repeat that line before or after calling this tool. Calling this ends the session immediately — do not speak again afterward.",
                 parameters: {
                     type: "OBJECT",
                     properties: {},

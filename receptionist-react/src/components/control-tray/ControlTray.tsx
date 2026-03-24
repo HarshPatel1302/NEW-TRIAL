@@ -87,7 +87,7 @@ function ControlTray({
   const autoStartInFlightRef = useRef(false);
   const wasConnectedRef = useRef(false);
 
-  const { client, connected, connect, disconnect, volume, assistantAudioPlaying, setUserInputVolume } =
+  const { client, connected, connect, disconnect, volume, assistantAudioPlaying } =
     useLiveAPIContext();
   const assistantSpeakingRef = useRef(false);
   assistantSpeakingRef.current = assistantAudioPlaying;
@@ -102,14 +102,8 @@ function ControlTray({
       "--volume",
       `${Math.max(5, Math.min(inVolume * 200, 8))}px`
     );
-    setUserInputVolume(Math.max(0, Math.min(1, inVolume)));
-  }, [inVolume, setUserInputVolume]);
+  }, [inVolume]);
 
-  useEffect(() => {
-    if (!connected || muted) {
-      setUserInputVolume(0);
-    }
-  }, [connected, muted, setUserInputVolume]);
 
   useEffect(() => {
     const onData = (base64: string) => {

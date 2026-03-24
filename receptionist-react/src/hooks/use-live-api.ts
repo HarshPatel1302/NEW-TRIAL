@@ -41,9 +41,6 @@ export type UseLiveAPIResults = {
    * Populated after the audio output context initializes; read in rAF for bar visualizers.
    */
   assistantOutputAnalyserRef: React.MutableRefObject<AnalyserNode | null>;
-  /** Visitor microphone level from ControlTray (0..1), used for visitor-reactive visuals. */
-  userInputVolume: number;
-  setUserInputVolume: (value: number) => void;
 };
 
 const MAX_RECONNECT_ATTEMPTS = 3;
@@ -59,7 +56,6 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
   const [connected, setConnected] = useState(false);
   const [volume, setVolume] = useState(0);
   const [assistantAudioPlaying, setAssistantAudioPlaying] = useState(false);
-  const [userInputVolume, setUserInputVolume] = useState(0);
 
   const intentionalDisconnectRef = useRef(false);
   const reconnectAttemptsRef = useRef(0);
@@ -229,6 +225,8 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
       clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;
     }
+    // Stop audio immediately so playback cuts off when user navigates away
+    audioStreamerRef.current?.stop();
     client.disconnect();
     setConnected(false);
     setAssistantAudioPlaying(false);
@@ -247,7 +245,5 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
     assistantAudioPlaying,
     lipSyncRef,
     assistantOutputAnalyserRef,
-    userInputVolume,
-    setUserInputVolume,
   };
 }

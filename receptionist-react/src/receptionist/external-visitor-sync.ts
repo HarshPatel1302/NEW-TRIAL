@@ -1,4 +1,9 @@
 import type { MatchedMember } from "./member-directory";
+import {
+  buildReceptionistHeaders,
+  cubeOneProxyConfigured,
+  receptionistApiBase,
+} from "./cubeone-via-backend";
 
 type SyncKey =
   | "search_visitor"
@@ -63,6 +68,14 @@ export type ExternalSyncResult = {
   attempted: boolean;
   allSuccessful: boolean;
   results: FieldSyncResult[];
+};
+
+export type GateVisitorSearchResult = {
+  ok: boolean;
+  found: boolean;
+  visitor_id?: number | null;
+  visitor_name?: string;
+  message?: string;
 };
 
 type ApiEnvelope<T = unknown> = {
@@ -1178,6 +1191,61 @@ function getGateApiClient() {
 export async function syncWalkInDetailsToExternalApis(
   details: ExternalWalkInDetails
 ): Promise<ExternalSyncResult> {
+  if (cubeOneProxyConfigured()) {
+    const url = `${receptionistApiBase()}/integrations/cubeone/walk-in-sync`;
+    try {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: buildReceptionistHeaders(),
+        body: JSON.stringify(details),
+      });
+      const payload = (await response.json()) as ExternalSyncResult & { message?: string };
+      if (!response.ok) {
+        return {
+          attempted: true,
+          allSuccessful: false,
+          results: [
+            {
+              field: "search_visitor",
+              configured: true,
+              ok: false,
+              error:
+                String(payload?.message || "") || `Walk-in proxy failed (HTTP ${response.status})`,
+            },
+          ],
+        };
+      }
+      if (payload && Array.isArray(payload.results)) {
+        return payload as ExternalSyncResult;
+      }
+      return {
+        attempted: true,
+        allSuccessful: false,
+        results: [
+          {
+            field: "search_visitor",
+            configured: true,
+            ok: false,
+            error: "Invalid walk-in proxy response",
+          },
+        ],
+      };
+    } catch (e: any) {
+      return {
+        attempted: true,
+        allSuccessful: false,
+        results: [
+          {
+            field: "search_visitor",
+            configured: true,
+            ok: false,
+            error: String(e?.message || e || "Walk-in proxy network error"),
+          },
+        ],
+      };
+    }
+  }
+
   const client = getGateApiClient();
   const search = await client.searchVisitor(details);
   let resolvedVisitorId = search.visitorId;
@@ -1230,5 +1298,65 @@ export async function syncWalkInDetailsToExternalApis(
     attempted,
     allSuccessful,
     results,
+  };
+}
+
+export async function searchVisitorByPhoneInGate(
+  phone: string
+): Promise<GateVisitorSearchResult> {
+  const normalized = onlyDigits(phone);
+  if (!normalized) {
+    return {
+      ok: false,
+      found: false,
+      message: "phone is required",
+    };
+  }
+
+  if (cubeOneProxyConfigured()) {
+    try {
+      const url = `${receptionistApiBase()}/integrations/cubeone/search-visitor?phone=${encodeURIComponent(
+        normalized
+      )}`;
+      const response = await fetch(url, {
+        method: "GET",
+        headers: buildReceptionistHeaders(),
+      });
+      const payload = (await response.json()) as GateVisitorSearchResult;
+      if (!response.ok) {
+        return {
+          ok: false,
+          found: false,
+          message: String(payload?.message || `search failed (${response.status})`),
+        };
+      }
+      return {
+        ok: true,
+        found: Boolean(payload?.found),
+        visitor_id: payload?.visitor_id || null,
+        visitor_name: String(payload?.visitor_name || "").trim(),
+      };
+    } catch (e: any) {
+      return {
+        ok: false,
+        found: false,
+        message: String(e?.message || "search visitor request failed"),
+      };
+    }
+  }
+
+  const client = getGateApiClient();
+  const res = await client.searchVisitor({
+    name: "",
+    phone: normalized,
+    cameFrom: "",
+    meetingWith: "",
+  });
+  return {
+    ok: res.result.ok,
+    found: res.found,
+    visitor_id: res.visitorId || null,
+    visitor_name: "",
+    message: res.result.error || res.result.message,
   };
 }
