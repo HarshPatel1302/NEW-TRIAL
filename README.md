@@ -95,7 +95,7 @@ npm run dev
 In `receptionist-react/.env.local`:
 
 ```env
-REACT_APP_RECEPTIONIST_API_URL=http://localhost:5000/api
+REACT_APP_RECEPTIONIST_API_URL=http://localhost:5050/api
 REACT_APP_RECEPTIONIST_API_KEY=change_this_key
 REACT_APP_KIOSK_ID=greenscape-lobby-kiosk-1
 ```
@@ -113,9 +113,9 @@ npm start
 
 ### Export links
 
-- Visitors CSV: `http://localhost:5000/api/exports/visitors.csv`
-- Visitors Excel: `http://localhost:5000/api/exports/visitors.xlsx`
-- Sessions CSV: `http://localhost:5000/api/exports/sessions.csv`
+- Visitors CSV: `http://localhost:5050/api/exports/visitors.csv`
+- Visitors Excel: `http://localhost:5050/api/exports/visitors.xlsx`
+- Sessions CSV: `http://localhost:5050/api/exports/sessions.csv`
 
 ### Admin dashboard
 
@@ -137,16 +137,20 @@ npm run backup:run
 
 ```bash
 cp .env.production.example .env.production
+# Edit .env.production: set BACKEND_API_KEY, POSTGRES_PASSWORD, REACT_APP_GEMINI_API_KEY, CORS_ORIGIN, and any optional integration vars.
 docker compose --env-file .env.production -f docker-compose.production.yml up -d --build
 ```
 
 Production entrypoint:
 
-- `http://localhost:8080`
+- `http://localhost:8080` (map hostnames / TLS in front of the edge container as needed)
 
 Notes:
 - Backend container auto-runs `node src/init-db.js` at startup before serving traffic.
-- Set `BACKEND_API_KEY` in `.env.production`; frontend admin/receptionist requests include this key.
+- Set `BACKEND_API_KEY` and `POSTGRES_PASSWORD` in `.env.production`; never commit that file (it is gitignored).
+- `CORS_ORIGIN` must list the exact browser origin(s) of the kiosk (e.g. `https://kiosk.example.com`).
+- Frontend build bakes `REACT_APP_*` into static assets; optional gate/visitor-sync variables are passed as Docker build-args from the same env file.
+- **Security:** Keep `receptionist-react/.env.local` and root `.env.production` out of git; rotate any API key that was ever committed or shared.
 
 ---
 

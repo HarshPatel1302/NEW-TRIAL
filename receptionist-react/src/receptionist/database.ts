@@ -39,10 +39,12 @@ type SessionEventPayload = {
 
 export class DatabaseManager {
     private static STORAGE_KEY = 'greenscape_visitors';
-    private static API_BASE = process.env.REACT_APP_RECEPTIONIST_API_URL || 'http://localhost:5000/api';
+    private static API_BASE = process.env.REACT_APP_RECEPTIONIST_API_URL || 'http://localhost:5050/api';
     private static API_KEY = process.env.REACT_APP_RECEPTIONIST_API_KEY || '';
     private static KIOSK_ID = process.env.REACT_APP_KIOSK_ID || '';
     private static REQUEST_TIMEOUT_MS = 7000;
+    /** Log a single actionable hint when the backend is not reachable (e.g. connection refused). */
+    private static backendUnreachableLogged = false;
 
     static async saveVisitor(visitor: VisitorInput, options: { sessionId?: string | null } = {}): Promise<Visitor> {
         const localRecord = this.upsertLocalVisitor(visitor);
@@ -228,6 +230,22 @@ export class DatabaseManager {
             }
 
             return payload as T;
+        } catch (error: unknown) {
+            const msg = error instanceof Error ? error.message : String(error);
+            if (
+                !DatabaseManager.backendUnreachableLogged &&
+                (msg.includes('Failed to fetch') ||
+                    msg.includes('NetworkError') ||
+                    msg.includes('Load failed'))
+            ) {
+                DatabaseManager.backendUnreachableLogged = true;
+                console.warn(
+                    `[DatabaseManager] Cannot reach backend at ${DatabaseManager.API_BASE}. ` +
+                        'Using local visitor cache until the API is up. Start backend: ' +
+                        'cd backend && docker compose up -d && npm run dev'
+                );
+            }
+            throw error;
         } finally {
             clearTimeout(timeout);
         }

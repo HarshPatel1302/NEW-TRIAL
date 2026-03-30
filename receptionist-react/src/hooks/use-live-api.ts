@@ -38,7 +38,7 @@ export type UseLiveAPIResults = {
   lipSyncRef: React.MutableRefObject<LipSyncData>;
 };
 
-const MAX_RECONNECT_ATTEMPTS = 3;
+const MAX_RECONNECT_ATTEMPTS = 8;
 const RECONNECT_BASE_DELAY_MS = 1500;
 
 export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
@@ -182,8 +182,10 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
         .off("close", onClose)
         .off("interrupted", stopAudioStreamer)
         .off("turncomplete", completeAudioStreamer)
-        .off("audio", onAudio)
-        .disconnect();
+        .off("audio", onAudio);
+      // Do NOT call disconnect() here: this effect re-runs when `attemptReconnect`
+      // changes and on React Strict Mode / Fast Refresh remounts. Disconnecting
+      // in cleanup was closing the Gemini Live socket mid-conversation (code 1000).
     };
   }, [client, attemptReconnect]);
 

@@ -23,7 +23,13 @@ import { LiveClientOptions } from "./types";
 import { RECEPTIONIST_PERSONA } from "./receptionist/config";
 import { TOOLS } from "./receptionist/tools";
 import { DatabaseManager } from "./receptionist/database";
-import { syncWalkInDetailsToExternalApis } from "./receptionist/external-visitor-sync";
+import {
+  isValidIndianMobile,
+  lookupVisitorByMobile,
+  normalizeIndianMobile,
+  syncWalkInDetailsToExternalApis,
+  warmupVisitorAuth,
+} from "./receptionist/external-visitor-sync";
 import { requestDeliveryApproval } from "./receptionist/delivery-approval";
 import {
   decodeMembersFromNotes,
@@ -34,6 +40,19 @@ import purposeCatalog from "./receptionist/purpose.json";
 import { GestureController, GestureState } from "./components/Avatar3D/gesture-controller";
 import { ExpressionCue } from "./components/Avatar3D/facial-types";
 import AdminDashboard from "./admin/AdminDashboard";
+import {
+  isExplicitUnknownPerson,
+} from "./receptionist/flow-helpers";
+import {
+  canCapturePhoto,
+  canCreateVisitor,
+  canEmitFinalSuccess,
+  createVisitorFlowSession,
+  expectedSlotForState,
+  promptForState,
+  transitionVisitorFlow,
+  type VisitorFlowState,
+} from "./receptionist/visitor-flow-machine";
 
 const API_KEY = (process.env.REACT_APP_GEMINI_API_KEY || "").trim();
 
@@ -95,11 +114,6 @@ function hasMeaningfulValue(value: unknown) {
 
 function toPhoneDigits(value: unknown) {
   return String(value ?? "").replace(/\D/g, "");
-}
-
-function isValidVisitorPhone(value: unknown) {
-  const digits = toPhoneDigits(value);
-  return digits.length >= 10;
 }
 
 type ActiveReceptionFlow = "visitor" | "delivery";
@@ -174,11 +188,15 @@ function getMissingFieldsBeforePhoto(intent: unknown, collectedSlots: Record<str
     if (!hasMeaningfulValue(collectedSlots.visitor_name) && !hasMeaningfulValue(collectedSlots.name)) {
       missing.push("name");
     }
-    if (!isValidVisitorPhone(collectedSlots.phone || collectedSlots.visitor_phone || "")) {
+    const phone = String(collectedSlots.phone || collectedSlots.visitor_phone || "").replace(/\D/g, "");
+    if (phone.length < 10) {
       missing.push("phone");
     }
-    if (!hasMeaningfulValue(collectedSlots.meeting_with) && !hasMeaningfulValue(collectedSlots.person_to_meet)) {
-      missing.push("meeting_with");
+    if (!hasMeaningfulValue(collectedSlots.came_from)) {
+      missing.push("came_from");
+    }
+    if (!hasMeaningfulValue(collectedSlots.visit_company) && !hasMeaningfulValue(collectedSlots.company)) {
+      missing.push("visit_company");
     }
   }
 
@@ -187,6 +205,39 @@ function getMissingFieldsBeforePhoto(intent: unknown, collectedSlots: Record<str
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Wait until video dimensions are stable (reduces blank-frame capture after countdown). */
+async function waitForStableVideoFrames(
+  video: HTMLVideoElement,
+  opts: { maxMs: number; intervalMs: number; stableReads: number } = {
+    maxMs: 4500,
+    intervalMs: 120,
+    stableReads: 2,
+  }
+) {
+  const start = Date.now();
+  let lastW = 0;
+  let stableHits = 0;
+  while (Date.now() - start < opts.maxMs) {
+    if (
+      video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA &&
+      video.videoWidth > 0 &&
+      video.videoHeight > 0
+    ) {
+      if (video.videoWidth === lastW && lastW > 0) {
+        stableHits += 1;
+        if (stableHits >= opts.stableReads) {
+          return true;
+        }
+      } else {
+        stableHits = 0;
+        lastW = video.videoWidth;
+      }
+    }
+    await sleep(opts.intervalMs);
+  }
+  return video.videoWidth > 0 && video.videoHeight > 0;
 }
 
 function normalizeSlotName(input: unknown) {
@@ -226,6 +277,11 @@ function normalizeSlotName(input: unknown) {
     where_from: "came_from",
     from_where: "came_from",
     delivery_partner: "delivery_company",
+    visit_company: "visit_company",
+    company_to_meet: "visit_company",
+    office_to_visit: "visit_company",
+    meeting_company: "visit_company",
+    greenscape_company: "visit_company",
   };
 
   return aliases[raw] || raw;
@@ -367,6 +423,35 @@ function ReceptionistApp() {
   const hasPersistedSecuritySnapshotRef = useRef(false);
   const captureInFlightRef = useRef(false);
   const lastCaptureErrorRef = useRef<string>("");
+  /** Clears prior reset timers so end_interaction cannot stack multiple disconnects. */
+  const endSessionResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Dedupes identical assistant text bursts from the model (reduces repeated bubble / perceived duplicate TTS). */
+  const lastAssistantTextDedupeRef = useRef<{ text: string; at: number }>({ text: "", at: 0 });
+  const visitorFlowRef = useRef(createVisitorFlowSession());
+
+  const setVisitorFlowState = useCallback((next: VisitorFlowState, reason: string) => {
+    try {
+      const previous = visitorFlowRef.current.state;
+      const updated = transitionVisitorFlow(visitorFlowRef.current, next);
+      visitorFlowRef.current = updated;
+      console.info("[VisitorFlow] transition", {
+        from: previous,
+        to: next,
+        reason,
+        at: Date.now(),
+      });
+      return true;
+    } catch (error) {
+      console.error("[VisitorFlow] invalid transition", {
+        from: visitorFlowRef.current.state,
+        to: next,
+        reason,
+        error,
+      });
+      visitorFlowRef.current = { ...visitorFlowRef.current, state: "ERROR" };
+      return false;
+    }
+  }, []);
 
   const { client, setConfig, setModel, connected, disconnect: disconnectSession, lipSyncRef, assistantAudioPlaying } = useLiveAPIContext();
 
@@ -489,14 +574,28 @@ function ReceptionistApp() {
   }, [enqueueGesture]);
 
   const captureVisitorPhotoJpeg = useCallback(async () => {
+    const videoFirst = videoRef.current;
+    if (videoFirst) {
+      const stable = await waitForStableVideoFrames(videoFirst);
+      if (!stable) {
+        const sid = sessionIdRef.current;
+        if (sid) {
+          void DatabaseManager.logSessionEvent(sid, {
+            role: "system",
+            eventType: "camera_capture_frame_wait",
+            content: "video_frames_not_stable",
+          });
+        }
+      }
+    }
     const attempts = 12;
     for (let index = 0; index < attempts; index += 1) {
-      const video = videoRef.current;
-      if (video && video.videoWidth > 0 && video.videoHeight > 0) {
+      const videoEl = videoRef.current;
+      if (videoEl && videoEl.videoWidth > 0 && videoEl.videoHeight > 0) {
         const maxWidth = 640;
-        const ratio = Math.min(1, maxWidth / video.videoWidth);
-        const targetWidth = Math.max(1, Math.round(video.videoWidth * ratio));
-        const targetHeight = Math.max(1, Math.round(video.videoHeight * ratio));
+        const ratio = Math.min(1, maxWidth / videoEl.videoWidth);
+        const targetWidth = Math.max(1, Math.round(videoEl.videoWidth * ratio));
+        const targetHeight = Math.max(1, Math.round(videoEl.videoHeight * ratio));
         const canvas = document.createElement("canvas");
         canvas.width = targetWidth;
         canvas.height = targetHeight;
@@ -504,7 +603,7 @@ function ReceptionistApp() {
         if (!ctx) {
           return null;
         }
-        ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
+        ctx.drawImage(videoEl, 0, 0, targetWidth, targetHeight);
         return canvas.toDataURL("image/jpeg", 0.82);
       }
       await sleep(300);
@@ -547,6 +646,8 @@ function ReceptionistApp() {
   }, []);
 
   const openTemporaryCameraStream = useCallback(async () => {
+    const startedAt = Date.now();
+    console.info("[perf] camera_init_start", { t: startedAt });
     if (!navigator.mediaDevices?.getUserMedia) {
       lastCaptureErrorRef.current = "Camera API is not supported in this browser.";
       return null;
@@ -586,6 +687,11 @@ function ReceptionistApp() {
         }
         setVideoStream(stream);
         lastCaptureErrorRef.current = "";
+        console.info("[perf] camera_init_end", {
+          t: Date.now(),
+          duration_ms: Date.now() - startedAt,
+          ok: true,
+        });
         return stream;
       } catch (error) {
         lastError = error;
@@ -593,6 +699,11 @@ function ReceptionistApp() {
     }
 
     lastCaptureErrorRef.current = describeCameraAccessError(lastError);
+    console.info("[perf] camera_init_end", {
+      t: Date.now(),
+      duration_ms: Date.now() - startedAt,
+      ok: false,
+    });
     return null;
   }, [describeCameraAccessError]);
 
@@ -602,6 +713,8 @@ function ReceptionistApp() {
     }
 
     captureInFlightRef.current = true;
+    const startedAt = Date.now();
+    console.info("[perf] photo_capture_start", { t: startedAt, source, countdown_ms: countdownMs });
     try {
       lastCaptureErrorRef.current = "";
       const activeSessionId = sessionIdRef.current;
@@ -657,6 +770,11 @@ function ReceptionistApp() {
       }
       return false;
     } finally {
+      console.info("[perf] photo_capture_end", {
+        t: Date.now(),
+        duration_ms: Date.now() - startedAt,
+        ok: !!visitorCheckInPhotoRef.current,
+      });
       captureInFlightRef.current = false;
       stopCameraPreview();
     }
@@ -740,6 +858,9 @@ function ReceptionistApp() {
     let cancelled = false;
 
     if (connected) {
+      void warmupVisitorAuth();
+      visitorFlowRef.current = createVisitorFlowSession();
+      void setVisitorFlowState("ASK_PHONE", "session_connected");
       setConversationState({ collectedSlots: {} });
       hasSavedVisitorRef.current = false;
       hasPersistedSecuritySnapshotRef.current = false;
@@ -753,6 +874,11 @@ function ReceptionistApp() {
         }
       });
     } else {
+      visitorFlowRef.current = createVisitorFlowSession();
+      if (endSessionResetTimerRef.current) {
+        clearTimeout(endSessionResetTimerRef.current);
+        endSessionResetTimerRef.current = null;
+      }
       setConversationState({ collectedSlots: {} });
       lastLoggedAssistantTextRef.current = "";
       stopCameraPreview();
@@ -784,7 +910,7 @@ function ReceptionistApp() {
     return () => {
       cancelled = true;
     };
-  }, [connected, persistSecuritySnapshotIfNeeded, stopCameraPreview, waitForCaptureSettled]);
+  }, [connected, persistSecuritySnapshotIfNeeded, setVisitorFlowState, stopCameraPreview, waitForCaptureSettled]);
 
   // ── AUTO-GREETING ─────────────────────────────────────────────────
   useEffect(() => {
@@ -911,6 +1037,13 @@ function ReceptionistApp() {
 
       if (!text) return;
 
+      const now = Date.now();
+      const dedupe = lastAssistantTextDedupeRef.current;
+      if (dedupe.text === text && now - dedupe.at < 2800) {
+        return;
+      }
+      lastAssistantTextDedupeRef.current = { text, at: now };
+
       setLastAudioText(text);
       if (text !== lastLoggedAssistantTextRef.current) {
         lastLoggedAssistantTextRef.current = text;
@@ -945,6 +1078,11 @@ function ReceptionistApp() {
     collectedSlots: {}
   });
 
+  const conversationStateRef = useRef(conversationState);
+  useEffect(() => {
+    conversationStateRef.current = conversationState;
+  }, [conversationState]);
+
   // ── Handle Tool Calls ─────────────────────────────────────────────
   useEffect(() => {
     const onToolCall = async (toolCall: any) => {
@@ -954,13 +1092,15 @@ function ReceptionistApp() {
       for (const fc of toolCall.functionCalls) {
         let result: any = { error: "Unknown tool" };
         const { name, args } = fc;
+        const toolStartedAt = Date.now();
+        console.info("[flow] input_received", { tool: name, t: toolStartedAt });
         const activeSessionId = sessionIdRef.current;
 
         if (activeSessionId) {
           void DatabaseManager.logSessionEvent(activeSessionId, {
             role: "tool",
             eventType: `tool_call:${name}`,
-            content: JSON.stringify(args || {}),
+            content: JSON.stringify({ ...(args || {}), ts: Date.now() }),
           });
         }
 
@@ -981,6 +1121,22 @@ function ReceptionistApp() {
               setExpressionCue("confirming_yes");
               fireGesture('nodYes', undefined, 2);
             }
+            if (normalizedIntent === "delivery") {
+              visitorFlowRef.current = {
+                ...visitorFlowRef.current,
+                mode: "delivery",
+                isExistingVisitor: false,
+              };
+              void setVisitorFlowState("DELIVERY_ASK_NAME", "intent_delivery_selected");
+            } else {
+              visitorFlowRef.current = {
+                ...visitorFlowRef.current,
+                mode: "new_visitor",
+              };
+              if (visitorFlowRef.current.state === "IDLE" || visitorFlowRef.current.state === "MODE_SELECTED") {
+                void setVisitorFlowState("ASK_PHONE", "intent_non_delivery_selected");
+              }
+            }
 
             result = {
               status: "success",
@@ -993,7 +1149,12 @@ function ReceptionistApp() {
             }
           }
           else if (name === "collect_slot_value") {
-            const slotName = normalizeSlotName(args.slot_name);
+            const normalizedIncomingSlotName = normalizeSlotName(args.slot_name);
+            const expectedSlot = expectedSlotForState(visitorFlowRef.current.state);
+            const slotName =
+              expectedSlot === "visit_company" && normalizedIncomingSlotName === "meeting_with"
+                ? "visit_company"
+                : normalizedIncomingSlotName;
             const disallowedSlotNames = [
               "department",
               "purpose",
@@ -1009,17 +1170,45 @@ function ReceptionistApp() {
                   "This field is not required. Collect only the active flow details before photo capture.",
               };
             } else {
+            if (expectedSlot && slotName !== expectedSlot) {
+              result = {
+                status: "need_more_info",
+                slot: slotName,
+                expected_slot: expectedSlot,
+                message: promptForState(visitorFlowRef.current.state, visitorFlowRef.current.visitorName),
+              };
+              responses.push({
+                name: name,
+                id: fc.id,
+                response: { result },
+              });
+              continue;
+            }
             const isDeliverySlotName = ["delivery_company", "recipient_company", "recipient_name"].includes(slotName);
             const rawSlotValue = String(args.value || "").trim();
-            const existingSlotValue = String(conversationState.collectedSlots[slotName] || "").trim();
+            const existingSlotValue = String(conversationStateRef.current.collectedSlots[slotName] || "").trim();
             const slotValue = mergeCollectedSlotValue(slotName, rawSlotValue, existingSlotValue);
             const phoneDigitsCollected = slotName === "phone" ? toPhoneDigits(slotValue).length : 0;
             const phoneNeedsMoreDigits = slotName === "phone" && phoneDigitsCollected > 0 && phoneDigitsCollected < 10;
+            const normalizedPhoneValue = slotName === "phone" ? normalizeIndianMobile(slotValue) : "";
+            const phoneInvalid =
+              slotName === "phone" &&
+              phoneDigitsCollected >= 10 &&
+              !isValidIndianMobile(normalizedPhoneValue);
+            if (slotName === "phone" && !phoneInvalid && !phoneNeedsMoreDigits) {
+              visitorFlowRef.current = {
+                ...visitorFlowRef.current,
+                phoneNumber: slotValue,
+                normalizedPhoneNumber: normalizedPhoneValue,
+              };
+              if (visitorFlowRef.current.state === "ASK_PHONE") {
+                void setVisitorFlowState("SEARCHING_VISITOR", "phone_captured_search_started");
+              }
+            }
             const shouldResolvePurposeCategory = [
               "purpose",
               "purpose_category",
               "category",
-              "company",
               "delivery_company",
             ].includes(slotName);
             const matchedPurpose = shouldResolvePurposeCategory
@@ -1030,15 +1219,16 @@ function ReceptionistApp() {
               "recipient_name",
             ].includes(slotName);
             const memberLookupQueryContext =
-              conversationState.collectedSlots.recipient_company ||
-              conversationState.collectedSlots.target_company ||
-              conversationState.collectedSlots.came_from ||
-              conversationState.collectedSlots.company ||
+              conversationStateRef.current.collectedSlots.recipient_company ||
+              conversationStateRef.current.collectedSlots.visit_company ||
+              conversationStateRef.current.collectedSlots.target_company ||
+              conversationStateRef.current.collectedSlots.came_from ||
+              conversationStateRef.current.collectedSlots.company ||
               "";
             const memberLookup = shouldResolveMemberDestination && hasMeaningfulValue(slotValue)
               ? await resolveMembersForDestination(slotValue, {
                   secondaryQuery: memberLookupQueryContext,
-                  maxResults: 1,
+                  maxResults: 5,
                 })
               : null;
             const matchedMemberIds = memberLookup?.memberIds || [];
@@ -1056,6 +1246,68 @@ function ReceptionistApp() {
               memberLookup.configured &&
               memberLookup.ok &&
               matchedMemberIds.length === 0;
+            if (slotName === "visitor_name" && visitorFlowRef.current.state === "NEW_VISITOR_ASK_NAME") {
+              visitorFlowRef.current = { ...visitorFlowRef.current, visitorName: slotValue };
+              void setVisitorFlowState("NEW_VISITOR_ASK_COMING_FROM", "captured_new_visitor_name");
+            }
+            if (slotName === "visitor_name" && visitorFlowRef.current.state === "DELIVERY_ASK_NAME") {
+              visitorFlowRef.current = { ...visitorFlowRef.current, deliveryPersonName: slotValue };
+              void setVisitorFlowState(
+                "DELIVERY_ASK_DELIVERY_COMPANY",
+                "captured_delivery_person_name"
+              );
+            }
+            if (slotName === "came_from" && visitorFlowRef.current.state === "NEW_VISITOR_ASK_COMING_FROM") {
+              visitorFlowRef.current = { ...visitorFlowRef.current, comingFrom: slotValue };
+              void setVisitorFlowState("NEW_VISITOR_ASK_COMPANY", "captured_new_visitor_coming_from");
+            }
+            if (
+              slotName === "delivery_company" &&
+              visitorFlowRef.current.state === "DELIVERY_ASK_DELIVERY_COMPANY"
+            ) {
+              visitorFlowRef.current = { ...visitorFlowRef.current, deliveryCompanyName: slotValue };
+              void setVisitorFlowState("DELIVERY_ASK_TARGET_COMPANY", "captured_delivery_company");
+            }
+            if (
+              slotName === "recipient_company" &&
+              visitorFlowRef.current.state === "DELIVERY_ASK_TARGET_COMPANY"
+            ) {
+              visitorFlowRef.current = { ...visitorFlowRef.current, parcelForCompany: slotValue };
+              void setVisitorFlowState("DELIVERY_ASK_TARGET_PERSON", "captured_delivery_target_company");
+            }
+            if (slotName === "visit_company") {
+              visitorFlowRef.current = { ...visitorFlowRef.current, companyToVisit: slotValue };
+              if (visitorFlowRef.current.state === "NEW_VISITOR_ASK_COMPANY") {
+                void setVisitorFlowState("NEW_VISITOR_CAPTURE_PHOTO", "captured_new_visitor_company");
+              } else if (visitorFlowRef.current.state === "EXISTING_VISITOR_ASK_COMPANY") {
+                void setVisitorFlowState("FETCH_MEMBER_LIST", "captured_existing_visitor_company");
+                void setVisitorFlowState("RESOLVE_DESTINATION", "existing_visitor_company_resolved");
+              }
+            }
+            if (slotName === "meeting_with" || slotName === "recipient_name") {
+              const hasMember = matchedMemberIds.length > 0;
+              const currentFlowState = visitorFlowRef.current.state;
+              visitorFlowRef.current = {
+                ...visitorFlowRef.current,
+                destinationResolved: true,
+                selectedMember: hasMember,
+                personToMeet: slotName === "meeting_with" ? slotValue : visitorFlowRef.current.personToMeet,
+                parcelForPerson: slotName === "recipient_name" ? slotValue : visitorFlowRef.current.parcelForPerson,
+              };
+              if (currentFlowState === "DELIVERY_ASK_TARGET_PERSON") {
+                void setVisitorFlowState("DELIVERY_CAPTURE_PHOTO", "delivery_target_person_collected");
+              } else if (hasMember) {
+                void setVisitorFlowState("FETCH_MEMBER_LIST", "destination_collected");
+                void setVisitorFlowState("RESOLVE_DESTINATION", "member_resolved_from_destination");
+                console.info("[VisitorFlow] member resolved", { memberIds: matchedMemberIds });
+              }
+            }
+            const hasAmbiguousMemberMatches =
+              slotName === "meeting_with" &&
+              !!memberLookup &&
+              memberLookup.configured &&
+              memberLookup.ok &&
+              matchedMemberIds.length > 1;
 
             setConversationState(prev => ({
               ...prev,
@@ -1119,11 +1371,22 @@ function ReceptionistApp() {
               status: "success",
               slot: slotName,
               value: slotValue,
+              next_prompt: promptForState(
+                visitorFlowRef.current.state,
+                visitorFlowRef.current.visitorName
+              ),
               ...(phoneNeedsMoreDigits
                 ? {
                     partial_phone: true,
                     phone_digits_collected: phoneDigitsCollected,
                     message: `Collected ${phoneDigitsCollected} phone digits. Ask only for remaining digits.`,
+                  }
+                : {}),
+              ...(phoneInvalid
+                ? {
+                    status: "need_more_info",
+                    missing_fields: ["phone"],
+                    message: "Please provide a valid 10-digit Indian mobile number.",
                   }
                 : {}),
               ...(matchedPurpose
@@ -1162,78 +1425,103 @@ function ReceptionistApp() {
                   "Sorry, I am not able to find that member. Could you specify the unit number?",
               };
             }
+            if (hasAmbiguousMemberMatches) {
+              const options = matchedMembers
+                .slice(0, 2)
+                .map((member) => {
+                  const unit = member.building_unit || member.unit_flat_number || "unknown unit";
+                  return `${member.unit_member_name || member.member_name} in ${unit}`;
+                })
+                .join(" or ");
+              result = {
+                ...result,
+                status: "need_more_info",
+                missing_fields: ["meeting_with"],
+                message: `I found multiple matches. Are you visiting ${options}?`,
+              };
+            }
             }
           }
           else if (name === "save_visitor_info") {
             const resolvedIntent = normalizeIntentName(
-              args.intent || conversationState.intent || "meet_person"
+              args.intent || conversationStateRef.current.intent || "meet_person"
             );
             const isDeliveryIntent = resolvedIntent === "delivery";
             const resolvedName =
               args.name ||
-              conversationState.collectedSlots.visitor_name ||
-              conversationState.collectedSlots.name ||
+              conversationStateRef.current.collectedSlots.visitor_name ||
+              conversationStateRef.current.collectedSlots.name ||
               "Visitor";
             const resolvedPhone =
               args.phone ||
-              conversationState.collectedSlots.phone ||
-              conversationState.collectedSlots.visitor_phone ||
+              conversationStateRef.current.collectedSlots.phone ||
+              conversationStateRef.current.collectedSlots.visitor_phone ||
               "N/A";
             const normalizedPhone = toPhoneDigits(resolvedPhone);
             const resolvedMeetingWith =
               args.meeting_with ||
-              conversationState.collectedSlots.meeting_with ||
-              conversationState.collectedSlots.person_to_meet ||
-              conversationState.collectedSlots.recipient_name ||
-              conversationState.collectedSlots.whom_to_meet ||
+              conversationStateRef.current.collectedSlots.meeting_with ||
+              conversationStateRef.current.collectedSlots.person_to_meet ||
+              conversationStateRef.current.collectedSlots.recipient_name ||
+              conversationStateRef.current.collectedSlots.whom_to_meet ||
               "N/A";
             const resolvedDeliveryCompany =
               args.delivery_company ||
-              conversationState.collectedSlots.delivery_company ||
-              conversationState.collectedSlots.delivery_partner ||
-              args.company ||
-              conversationState.collectedSlots.company ||
+              conversationStateRef.current.collectedSlots.delivery_company ||
+              conversationStateRef.current.collectedSlots.delivery_partner ||
+              (isDeliveryIntent
+                ? (args.company || conversationStateRef.current.collectedSlots.company || "")
+                : "") ||
               "";
             const resolvedRecipientCompany =
               args.recipient_company ||
-              conversationState.collectedSlots.recipient_company ||
-              conversationState.collectedSlots.target_company ||
-              conversationState.collectedSlots.department ||
+              conversationStateRef.current.collectedSlots.recipient_company ||
+              conversationStateRef.current.collectedSlots.target_company ||
+              conversationStateRef.current.collectedSlots.department ||
               "";
             const resolvedRecipientName =
               args.recipient_name ||
-              conversationState.collectedSlots.recipient_name ||
-              conversationState.collectedSlots.person_to_meet ||
-              conversationState.collectedSlots.recipient ||
-              conversationState.collectedSlots.meeting_with ||
+              conversationStateRef.current.collectedSlots.recipient_name ||
+              conversationStateRef.current.collectedSlots.person_to_meet ||
+              conversationStateRef.current.collectedSlots.recipient ||
+              conversationStateRef.current.collectedSlots.meeting_with ||
               "";
             const resolvedCameFrom =
-              args.came_from ||
-              args.company ||
-              conversationState.collectedSlots.came_from ||
-              conversationState.collectedSlots.origin ||
-              conversationState.collectedSlots.company ||
-              "Walk-in";
-            const finalMeetingWith = isDeliveryIntent
+              String(
+                args.came_from ||
+                conversationStateRef.current.collectedSlots.came_from ||
+                conversationStateRef.current.collectedSlots.origin ||
+                ""
+              ).trim() || "Walk-in";
+            const resolvedVisitCompany =
+              String(
+                args.visit_company ||
+                conversationStateRef.current.collectedSlots.visit_company ||
+                (!isDeliveryIntent ? conversationStateRef.current.collectedSlots.company || "" : "")
+              ).trim();
+            let finalMeetingWith = isDeliveryIntent
               ? String(resolvedRecipientName || resolvedMeetingWith || "N/A").trim()
               : String(resolvedMeetingWith || "N/A").trim();
+            if (!isDeliveryIntent && isExplicitUnknownPerson(finalMeetingWith)) {
+              finalMeetingWith = "Not specified";
+            }
             const finalCompany = isDeliveryIntent
               ? String(resolvedDeliveryCompany || resolvedCameFrom || "Delivery").trim()
-              : String(resolvedCameFrom || "Walk-in").trim();
+              : String(resolvedVisitCompany || "Walk-in").trim();
             const resolvedPurpose =
               args.purpose ||
-              conversationState.collectedSlots.purpose ||
+              conversationStateRef.current.collectedSlots.purpose ||
               "";
             const resolvedPurposeSubCategoryId = Number(
-              conversationState.collectedSlots.purpose_sub_category_id || ""
+              conversationStateRef.current.collectedSlots.purpose_sub_category_id || ""
             );
             const resolvedPurposeSubCategoryName =
-              conversationState.collectedSlots.purpose_sub_category_name || "";
+              conversationStateRef.current.collectedSlots.purpose_sub_category_name || "";
             const mappedPurposeCategoryId = Number(
-              conversationState.collectedSlots.purpose_category_id || ""
+              conversationStateRef.current.collectedSlots.purpose_category_id || ""
             );
             const mappedPurposeCategoryName =
-              conversationState.collectedSlots.purpose_category_name || "";
+              conversationStateRef.current.collectedSlots.purpose_category_name || "";
             const finalPurposeCategoryId =
               Number.isFinite(mappedPurposeCategoryId) && mappedPurposeCategoryId > 0
                 ? mappedPurposeCategoryId
@@ -1243,38 +1531,38 @@ function ReceptionistApp() {
               (resolvedIntent === "delivery" ? "DELIVERY" : "GUEST");
             const resolvedWhereToGo =
               args.where_to_go ||
-              conversationState.collectedSlots.where_to_go ||
+              conversationStateRef.current.collectedSlots.where_to_go ||
               "";
             const resolvedApprovalDecision = String(
               args.approval_decision ||
-              conversationState.collectedSlots.approval_decision ||
+              conversationStateRef.current.collectedSlots.approval_decision ||
               ""
             )
               .trim()
               .toLowerCase();
             const resolvedApprovalStatus = String(
               args.approval_status ||
-              conversationState.collectedSlots.approval_status ||
+              conversationStateRef.current.collectedSlots.approval_status ||
               ""
             )
               .trim()
               .toLowerCase();
             const resolvedApprovalSource = String(
-              conversationState.collectedSlots.approval_source || ""
+              conversationStateRef.current.collectedSlots.approval_source || ""
             ).trim();
             let resolvedMemberIdsCsv =
               String(
-                conversationState.collectedSlots.member_ids ||
+                conversationStateRef.current.collectedSlots.member_ids ||
                 ""
               ).trim();
             let resolvedMemberLookupQuery =
               String(
-                conversationState.collectedSlots.member_lookup_query ||
+                conversationStateRef.current.collectedSlots.member_lookup_query ||
                 ""
               ).trim();
             let resolvedMemberObjectsEncoded =
               String(
-                conversationState.collectedSlots.member_objects_uri ||
+                conversationStateRef.current.collectedSlots.member_objects_uri ||
                 ""
               ).trim();
             let resolvedMemberObjects = resolvedMemberObjectsEncoded
@@ -1291,7 +1579,43 @@ function ReceptionistApp() {
               ? [resolvedRecipientCompany, resolvedDeliveryCompany, resolvedCameFrom]
                   .filter((value) => hasMeaningfulValue(value))
                   .join(" ")
-              : resolvedCameFrom;
+              : [resolvedVisitCompany, resolvedCameFrom]
+                  .filter((value) => hasMeaningfulValue(value))
+                  .join(" ");
+
+            if (
+              resolvedMemberObjects.length === 0 &&
+              hasMeaningfulValue(memberLookupPrimaryQuery || memberLookupSecondaryQuery)
+            ) {
+              const fallbackMemberLookup = await resolveMembersForDestination(
+                memberLookupPrimaryQuery || memberLookupSecondaryQuery,
+                {
+                  secondaryQuery: memberLookupSecondaryQuery || memberLookupPrimaryQuery,
+                  maxResults: 5,
+                }
+              );
+              if (fallbackMemberLookup.ok && fallbackMemberLookup.matchedMembers.length > 0) {
+                resolvedMemberObjects = fallbackMemberLookup.matchedMembers;
+                resolvedMemberIdsCsv = fallbackMemberLookup.memberIds.join(",");
+                resolvedMemberLookupQuery = fallbackMemberLookup.query;
+                resolvedMemberObjectsEncoded = encodeMembersForNotes(fallbackMemberLookup.matchedMembers);
+                visitorFlowRef.current = {
+                  ...visitorFlowRef.current,
+                  selectedMember: true,
+                  destinationResolved: true,
+                };
+                setConversationState((prev) => ({
+                  ...prev,
+                  collectedSlots: {
+                    ...prev.collectedSlots,
+                    member_ids: resolvedMemberIdsCsv,
+                    member_lookup_query: resolvedMemberLookupQuery,
+                    member_match_count: String(fallbackMemberLookup.memberIds.length),
+                    member_objects_uri: resolvedMemberObjectsEncoded,
+                  },
+                }));
+              }
+            }
 
             if (
               (!resolvedMemberIdsCsv || resolvedMemberObjects.length === 0) &&
@@ -1301,7 +1625,7 @@ function ReceptionistApp() {
                 memberLookupPrimaryQuery,
                 {
                   secondaryQuery: memberLookupSecondaryQuery,
-                  maxResults: 1,
+                  maxResults: 5,
                 }
               );
 
@@ -1338,6 +1662,20 @@ function ReceptionistApp() {
                 }));
               }
             }
+            if (!isDeliveryIntent && resolvedMemberObjects.length > 1) {
+              const options = resolvedMemberObjects
+                .slice(0, 2)
+                .map((member) => {
+                  const unit = member.building_unit || member.unit_flat_number || "unknown unit";
+                  return `${member.unit_member_name || member.member_name} in ${unit}`;
+                })
+                .join(" or ");
+              result = {
+                status: "need_more_info",
+                missing_fields: ["meeting_with"],
+                message: `I found multiple matches. Are you visiting ${options}?`,
+              };
+            } else {
             const notesWithPurposeCategory =
               [
                 String(args.notes || "").trim(),
@@ -1369,6 +1707,12 @@ function ReceptionistApp() {
                 resolvedApprovalSource
                   ? `approval_source:${resolvedApprovalSource}`
                   : "",
+                !isDeliveryIntent && hasMeaningfulValue(resolvedCameFrom)
+                  ? `visitor_origin:${String(resolvedCameFrom).trim()}`
+                  : "",
+                !isDeliveryIntent && hasMeaningfulValue(resolvedVisitCompany)
+                  ? `visit_company:${String(resolvedVisitCompany).trim()}`
+                  : "",
               ]
                 .filter(Boolean)
                 .join(" | ");
@@ -1387,11 +1731,35 @@ function ReceptionistApp() {
                   missingFields.push("recipient_name");
                 }
               } else {
-                if (!isValidVisitorPhone(resolvedPhone)) {
-                  missingFields.push("phone");
+                const mergedSlotsForVisitor: Record<string, string> = {
+                  ...conversationStateRef.current.collectedSlots,
+                };
+                if (args.name) mergedSlotsForVisitor.visitor_name = String(args.name);
+                if (args.phone) mergedSlotsForVisitor.phone = String(args.phone);
+                if (args.meeting_with) mergedSlotsForVisitor.meeting_with = String(args.meeting_with);
+                if (args.came_from) mergedSlotsForVisitor.came_from = String(args.came_from);
+                if (args.visit_company) mergedSlotsForVisitor.visit_company = String(args.visit_company);
+                if (args.company && !isDeliveryIntent) {
+                  mergedSlotsForVisitor.visit_company =
+                    mergedSlotsForVisitor.visit_company || String(args.company);
                 }
-                if (!hasMeaningfulValue(resolvedMeetingWith)) {
-                  missingFields.push("meeting_with");
+                if (visitorFlowRef.current.isExistingVisitor) {
+                  if (!hasMeaningfulValue(mergedSlotsForVisitor.visit_company)) {
+                    missingFields.push("visit_company");
+                  }
+                } else {
+                  if (!hasMeaningfulValue(mergedSlotsForVisitor.visitor_name)) {
+                    missingFields.push("name");
+                  }
+                  if (toPhoneDigits(mergedSlotsForVisitor.phone).length < 10) {
+                    missingFields.push("phone");
+                  }
+                  if (!hasMeaningfulValue(mergedSlotsForVisitor.came_from)) {
+                    missingFields.push("came_from");
+                  }
+                  if (!hasMeaningfulValue(mergedSlotsForVisitor.visit_company)) {
+                    missingFields.push("visit_company");
+                  }
                 }
               }
 
@@ -1406,9 +1774,9 @@ function ReceptionistApp() {
                   message:
                     isDeliveryIntent
                       ? "Collect delivery person name, delivery company, recipient company, and recipient name before saving."
-                      : "Collect name, phone, and whom they want to visit before saving. Ask one missing field at a time.",
+                      : "Collect phone, name, where you are coming from, and company to visit before saving.",
                 };
-              } else if (!visitorCheckInPhotoRef.current) {
+              } else if (!visitorFlowRef.current.isExistingVisitor && !visitorCheckInPhotoRef.current) {
                 result = {
                   status: "need_photo_capture",
                   missing_fields: ["photo"],
@@ -1417,77 +1785,136 @@ function ReceptionistApp() {
                       ? "Ask the delivery person to stand still for 5 seconds, call capture_photo, then save_visitor_info again."
                       : "Ask the visitor to stand still for 5 seconds, call capture_photo, then save_visitor_info again.",
                 };
-              } else if (!isDeliveryIntent && (!resolvedMemberIdsCsv || resolvedMemberObjects.length === 0)) {
+              } else if (
+                isDeliveryIntent &&
+                !hasMeaningfulValue(resolvedApprovalDecision)
+              ) {
                 result = {
                   status: "need_more_info",
-                  missing_fields: ["unit_number"],
+                  missing_fields: ["delivery_approval"],
                   message:
-                    "Sorry, I am not able to find that member. Could you specify the unit number?",
+                    "Call request_delivery_approval after capture_photo, then call save_visitor_info.",
                 };
               } else {
+                const existingVisitorIdFromState = visitorFlowRef.current.visitorId;
+                const existingVisitorIdFromSlots = Number(
+                  conversationStateRef.current.collectedSlots.visitor_id_external || ""
+                );
+                const effectiveExistingVisitorId =
+                  existingVisitorIdFromState ||
+                  (Number.isFinite(existingVisitorIdFromSlots) && existingVisitorIdFromSlots > 0
+                    ? existingVisitorIdFromSlots
+                    : null);
+                const isExistingVisitorFlow =
+                  !!effectiveExistingVisitorId ||
+                  visitorFlowRef.current.isExistingVisitor ||
+                  visitorFlowRef.current.mode === "existing_visitor";
                 const finalVisitorPhoto = visitorCheckInPhotoRef.current || args.photo || undefined;
                 const resolvedDepartment = String(
                   args.department ||
-                  conversationState.collectedSlots.department ||
+                  conversationStateRef.current.collectedSlots.department ||
                   "Reception"
                 ).trim() || "Reception";
                 const finalPhone = isDeliveryIntent
                   ? (normalizedPhone || "N/A")
                   : normalizedPhone;
-                const visitor = await DatabaseManager.saveVisitor({
-                  name: resolvedName,
-                  phone: finalPhone,
-                  meetingWith: finalMeetingWith,
-                  intent: resolvedIntent,
-                  department: resolvedDepartment,
-                  purpose: resolvedPurpose || (isDeliveryIntent ? "Delivery check-in" : "Visitor check-in"),
-                  company: finalCompany,
-                  appointmentTime: args.appointment_time,
-                  referenceId: args.reference_id,
-                  notes: notesWithPurposeCategory,
-                  photo: finalVisitorPhoto,
-                }, { sessionId: activeSessionId });
-
-                hasSavedVisitorRef.current = true;
-                result = {
-                  status: "success",
-                  visitor_id: visitor.id,
-                  photo_format: "image/jpeg",
-                  purpose_category_id: finalPurposeCategoryId,
-                  purpose_category_name: finalPurposeCategoryName,
-                  purpose_sub_category_id:
-                    Number.isFinite(resolvedPurposeSubCategoryId) && resolvedPurposeSubCategoryId > 0
-                      ? resolvedPurposeSubCategoryId
-                      : null,
-                  purpose_sub_category_name: resolvedPurposeSubCategoryName || null,
-                  member_ids: resolvedMemberIdsCsv
-                    ? resolvedMemberIdsCsv.split(",").map((id: string) => Number(id)).filter((id: number) => Number.isFinite(id))
-                    : [],
-                  matched_members: resolvedMemberObjects,
-                  approval_decision: resolvedApprovalDecision || null,
-                  approval_status: resolvedApprovalStatus || null,
-                };
-                if (activeSessionId) {
-                  void DatabaseManager.updateSession(activeSessionId, {
-                    visitorId: visitor.id,
-                    intent: resolvedIntent,
-                  });
+                if (
+                  !isExistingVisitorFlow &&
+                  visitorFlowRef.current.mode === "new_visitor" &&
+                  !canCreateVisitor(visitorFlowRef.current)
+                ) {
+                  result = {
+                    status: "need_photo_capture",
+                    missing_fields: ["photo"],
+                    message: "Please stand still for 5 seconds while I capture your photo.",
+                  };
+                } else if (!resolvedMemberObjects.length) {
+                  const companyOnlyLookup = await resolveMembersForDestination(
+                    resolvedVisitCompany || conversationStateRef.current.collectedSlots.visit_company || "",
+                    {
+                      secondaryQuery: "",
+                      maxResults: 5,
+                    }
+                  );
+                  if (companyOnlyLookup.ok && companyOnlyLookup.matchedMembers.length > 0) {
+                    resolvedMemberObjects = companyOnlyLookup.matchedMembers;
+                    resolvedMemberIdsCsv = companyOnlyLookup.memberIds.join(",");
+                  }
                 }
 
-                // External API sync is best-effort and must not block speech/tool response.
-                void (async () => {
+                if (!resolvedMemberObjects.length) {
+                  result = {
+                    status: "need_more_info",
+                    missing_fields: ["visit_company"],
+                    message:
+                      "I could not resolve the destination company or host. Please tell me the exact company in Cyber One.",
+                  };
+                } else {
+                  let localVisitorId = "";
+                  if (!isExistingVisitorFlow) {
+                    if (visitorFlowRef.current.mode === "new_visitor") {
+                      void setVisitorFlowState("NEW_VISITOR_CREATE_RECORD", "creating_new_visitor_record");
+                    }
+                    const visitor = await DatabaseManager.saveVisitor(
+                      {
+                        name: resolvedName,
+                        phone: finalPhone,
+                        meetingWith: finalMeetingWith,
+                        intent: resolvedIntent,
+                        department: resolvedDepartment,
+                        purpose: resolvedPurpose || (isDeliveryIntent ? "Delivery check-in" : "Visitor check-in"),
+                        company: finalCompany,
+                        appointmentTime: args.appointment_time,
+                        referenceId: args.reference_id,
+                        notes: notesWithPurposeCategory,
+                        photo: finalVisitorPhoto,
+                      },
+                      { sessionId: activeSessionId }
+                    );
+                    localVisitorId = visitor.id;
+                    hasSavedVisitorRef.current = true;
+                    visitorFlowRef.current = {
+                      ...visitorFlowRef.current,
+                      visitorCreated: true,
+                      visitorName: resolvedName,
+                    };
+                    console.info("[VisitorFlow] visitor created", { localVisitorId });
+                  } else {
+                    localVisitorId = String(effectiveExistingVisitorId);
+                    visitorFlowRef.current = {
+                      ...visitorFlowRef.current,
+                      isExistingVisitor: true,
+                      visitorId: effectiveExistingVisitorId,
+                      visitorName: resolvedName,
+                    };
+                  }
+
+                  if (activeSessionId && localVisitorId) {
+                    void DatabaseManager.updateSession(activeSessionId, {
+                      visitorId: localVisitorId,
+                      intent: resolvedIntent,
+                    });
+                  }
+
+                  if (visitorFlowRef.current.state !== "RESOLVE_DESTINATION") {
+                    if (visitorFlowRef.current.state !== "FETCH_MEMBER_LIST") {
+                      void setVisitorFlowState("FETCH_MEMBER_LIST", "preparing_member_resolution");
+                    }
+                    void setVisitorFlowState("RESOLVE_DESTINATION", "member_resolution_ready");
+                  }
+                  void setVisitorFlowState("CREATE_VISITOR_LOG", "calling_visitor_log_api");
+                  console.info("[VisitorFlow] visitor log request sent");
                   const configuredCompanyId = Number(process.env.REACT_APP_WALKIN_COMPANY_ID || "");
                   const externalSync = await syncWalkInDetailsToExternalApis({
                     name: resolvedName,
                     phone: normalizedPhone,
-                    cameFrom: finalCompany,
+                    cameFrom: resolvedCameFrom,
                     meetingWith: finalMeetingWith,
-                    localVisitorId: visitor.id,
+                    localVisitorId: localVisitorId || undefined,
                     intent: resolvedIntent,
                     sessionId: activeSessionId,
                     photo: finalVisitorPhoto,
-                    visitorPurposeCategoryId:
-                      finalPurposeCategoryId,
+                    visitorPurposeCategoryId: finalPurposeCategoryId,
                     visitorPurposeSubCategoryId:
                       Number.isFinite(resolvedPurposeSubCategoryId) && resolvedPurposeSubCategoryId > 0
                         ? resolvedPurposeSubCategoryId
@@ -1498,34 +1925,172 @@ function ReceptionistApp() {
                       : undefined,
                     companyName: isDeliveryIntent
                       ? (resolvedDeliveryCompany || finalCompany)
-                      : undefined,
+                      : (resolvedVisitCompany || finalCompany),
                     isStaff: false,
                   });
-
-                  if (activeSessionId && externalSync.attempted && !externalSync.allSuccessful) {
-                    await DatabaseManager.logSessionEvent(activeSessionId, {
-                      role: "system",
-                      eventType: "external_walkin_sync_partial_failure",
-                      content: JSON.stringify(externalSync.results),
+                  const addVisitorResult = externalSync.results.find((r) => r.field === "add_visitor_entry");
+                  const visitorLogResult = externalSync.results.find((r) => r.field === "add_visitor_log");
+                  const fcmResult = externalSync.results.find((r) => r.field === "send_member_notification");
+                  if (addVisitorResult && !addVisitorResult.ok && !isExistingVisitorFlow) {
+                    result = {
+                      status: "error",
+                      message:
+                        addVisitorResult.error ||
+                        "I could not upload the visitor photo. Please retake photo and try again.",
+                    };
+                    console.error("[VisitorFlow] add visitor failed", addVisitorResult);
+                    responses.push({
+                      name: name,
+                      id: fc.id,
+                      response: { result },
                     });
+                    continue;
                   }
-                })();
+                  console.info("[VisitorFlow] visitor log response received", visitorLogResult);
+                  void setVisitorFlowState("SEND_NOTIFICATION", "calling_fcm_api");
+                  console.info("[VisitorFlow] fcm request sent");
+                  console.info("[VisitorFlow] fcm response received", fcmResult);
+
+                  const visitorLogId = Number(visitorLogResult?.visitorLogId || 0) || null;
+                  visitorFlowRef.current = {
+                    ...visitorFlowRef.current,
+                    visitorId: visitorFlowRef.current.visitorId || Number(effectiveExistingVisitorId || 0) || null,
+                    visitorLogCreated: Boolean(visitorLogResult?.ok && visitorLogId),
+                    visitorLogId,
+                    fcmSent: Boolean(fcmResult?.ok),
+                  };
+
+                  if (!visitorLogResult?.ok || !visitorLogId) {
+                    result = {
+                      status: "error",
+                      message:
+                        "I could not complete your entry request right now. Please try again or contact reception.",
+                    };
+                    console.error("[VisitorFlow] visitor log failed", visitorLogResult);
+                  } else if (!fcmResult?.ok) {
+                    result = {
+                      status: "partial_success",
+                      message:
+                        "Your visit entry was created, but I could not notify the host yet. Please contact reception.",
+                    };
+                    console.error("[VisitorFlow] fcm failed", fcmResult);
+                  } else if (canEmitFinalSuccess(visitorFlowRef.current)) {
+                    void setVisitorFlowState("COMPLETED", "visitor_log_and_fcm_succeeded");
+                    console.info("[VisitorFlow] final success emitted", {
+                      visitorLogId: visitorFlowRef.current.visitorLogId,
+                    });
+                    result = {
+                      status: "success",
+                      visitor_id: localVisitorId,
+                      visitor_log_id: visitorFlowRef.current.visitorLogId,
+                      message:
+                        "Please have a seat in the lobby while your approval request is being sent.",
+                      photo_format: isExistingVisitorFlow ? null : "image/jpeg",
+                      purpose_category_id: finalPurposeCategoryId,
+                      purpose_category_name: finalPurposeCategoryName,
+                      purpose_sub_category_id:
+                        Number.isFinite(resolvedPurposeSubCategoryId) && resolvedPurposeSubCategoryId > 0
+                          ? resolvedPurposeSubCategoryId
+                          : null,
+                      purpose_sub_category_name: resolvedPurposeSubCategoryName || null,
+                      member_ids: resolvedMemberIdsCsv
+                        ? resolvedMemberIdsCsv
+                            .split(",")
+                            .map((id: string) => Number(id))
+                            .filter((id: number) => Number.isFinite(id))
+                        : [],
+                      matched_members: resolvedMemberObjects,
+                      approval_decision: resolvedApprovalDecision || null,
+                      approval_status: resolvedApprovalStatus || null,
+                    };
+                  } else {
+                    result = {
+                      status: "error",
+                      message:
+                        "I could not complete your entry request right now. Please try again or contact reception.",
+                    };
+                  }
+                }
               }
+            }
           }
           else if (name === "check_returning_visitor") {
-            const visitor = await DatabaseManager.findByPhone(args.phone);
-            if (visitor) {
-              setConversationState(prev => ({
-                ...prev,
-                collectedSlots: {
-                  ...prev.collectedSlots,
-                  visitor_name: visitor.name,
-                  phone: args.phone.replace(/\D/g, ""),
-                },
-              }));
-              result = { is_returning: true, last_visit: visitor.timestamp, name: visitor.name };
+            if (visitorFlowRef.current.state !== "SEARCHING_VISITOR") {
+              void setVisitorFlowState("SEARCHING_VISITOR", "check_returning_visitor_called");
+            }
+            const normalizedPhone = normalizeIndianMobile(args.phone || "");
+            if (!isValidIndianMobile(normalizedPhone)) {
+              result = {
+                is_returning: false,
+                status: "need_more_info",
+                missing_fields: ["phone"],
+                message: "Please provide a valid 10-digit mobile number.",
+              };
             } else {
-              result = { is_returning: false };
+              const lookup = await lookupVisitorByMobile(normalizedPhone);
+              if (!lookup.configured) {
+                visitorFlowRef.current = { ...visitorFlowRef.current, state: "ERROR" };
+                result = {
+                  is_returning: false,
+                  status: "error",
+                  message: "Visitor search service is not configured.",
+                };
+              } else if (!lookup.ok) {
+                visitorFlowRef.current = { ...visitorFlowRef.current, state: "ERROR" };
+                result = {
+                  is_returning: false,
+                  status: "error",
+                  message: lookup.message || "Unable to search visitor right now.",
+                };
+              } else if (lookup.found && lookup.visitor) {
+                const visitorId = Number(lookup.visitor.id) || null;
+                visitorFlowRef.current = {
+                  ...visitorFlowRef.current,
+                  mode: "existing_visitor",
+                  isExistingVisitor: true,
+                  visitorId,
+                  visitorName: lookup.visitor.name,
+                  visitorCreated: false,
+                  photoCaptured: false,
+                  photoUploaded: false,
+                };
+                void setVisitorFlowState("EXISTING_VISITOR_FOUND", "search_result_found");
+                void setVisitorFlowState("EXISTING_VISITOR_ASK_COMPANY", "existing_visitor_prompt_destination");
+                console.info("[VisitorFlow] existing visitor found", {
+                  visitorId,
+                  visitorName: lookup.visitor.name,
+                });
+                setConversationState(prev => ({
+                  ...prev,
+                  collectedSlots: {
+                    ...prev.collectedSlots,
+                    visitor_name: lookup.visitor?.name || "",
+                    phone: normalizedPhone,
+                    visitor_id_external: String(lookup.visitor?.id || ""),
+                    ...(lookup.visitor?.comingFrom
+                      ? { came_from: lookup.visitor.comingFrom }
+                      : {}),
+                  },
+                }));
+                result = {
+                  is_returning: true,
+                  name: lookup.visitor.name,
+                  visitor_id: lookup.visitor.id,
+                  message: `Hello ${lookup.visitor.name}, welcome again. Which company in Cyber One are you visiting today?`,
+                };
+              } else {
+                visitorFlowRef.current = {
+                  ...visitorFlowRef.current,
+                  mode: "new_visitor",
+                  isExistingVisitor: false,
+                  visitorId: null,
+                  visitorName: "",
+                  visitorCreated: false,
+                };
+                void setVisitorFlowState("NEW_VISITOR_ASK_NAME", "search_result_not_found");
+                console.info("[VisitorFlow] new visitor path started", { normalizedPhone });
+                result = { is_returning: false, normalized_phone: normalizedPhone };
+              }
             }
           }
           else if (name === "route_to_department") {
@@ -1538,7 +2103,6 @@ function ReceptionistApp() {
             };
           }
           else if (name === "request_approval") {
-            await new Promise((resolve) => setTimeout(resolve, 350));
             setConversationState((prev) => ({
               ...prev,
               collectedSlots: {
@@ -1563,44 +2127,44 @@ function ReceptionistApp() {
             const resolvedDeliveryCompany =
               String(
                 args.delivery_company ||
-                conversationState.collectedSlots.delivery_company ||
-                conversationState.collectedSlots.delivery_partner ||
-                conversationState.collectedSlots.company ||
+                conversationStateRef.current.collectedSlots.delivery_company ||
+                conversationStateRef.current.collectedSlots.delivery_partner ||
+                conversationStateRef.current.collectedSlots.company ||
                 ""
               ).trim();
             const resolvedRecipientCompany =
               String(
                 args.recipient_company ||
-                conversationState.collectedSlots.recipient_company ||
-                conversationState.collectedSlots.target_company ||
-                conversationState.collectedSlots.department ||
+                conversationStateRef.current.collectedSlots.recipient_company ||
+                conversationStateRef.current.collectedSlots.target_company ||
+                conversationStateRef.current.collectedSlots.department ||
                 ""
               ).trim();
             const resolvedRecipientName =
               String(
                 args.recipient_name ||
-                conversationState.collectedSlots.recipient_name ||
-                conversationState.collectedSlots.person_to_meet ||
-                conversationState.collectedSlots.recipient ||
-                conversationState.collectedSlots.meeting_with ||
+                conversationStateRef.current.collectedSlots.recipient_name ||
+                conversationStateRef.current.collectedSlots.person_to_meet ||
+                conversationStateRef.current.collectedSlots.recipient ||
+                conversationStateRef.current.collectedSlots.meeting_with ||
                 ""
               ).trim();
             const resolvedTrackingNumber =
               String(
                 args.tracking_number ||
-                conversationState.collectedSlots.reference_id ||
+                conversationStateRef.current.collectedSlots.reference_id ||
                 ""
               ).trim();
             const resolvedParcelDescription =
               String(
                 args.parcel_description ||
-                conversationState.collectedSlots.purpose ||
+                conversationStateRef.current.collectedSlots.purpose ||
                 "Parcel delivery"
               ).trim();
             const resolvedDeliveryPersonName =
               String(
                 args.delivery_person_name ||
-                conversationState.collectedSlots.visitor_name ||
+                conversationStateRef.current.collectedSlots.visitor_name ||
                 ""
               ).trim();
 
@@ -1681,7 +2245,6 @@ function ReceptionistApp() {
             };
           }
           else if (name === "notify_staff") {
-            await new Promise((resolve) => setTimeout(resolve, 500));
             setConversationState((prev) => ({
               ...prev,
               collectedSlots: {
@@ -1703,25 +2266,25 @@ function ReceptionistApp() {
             const resolvedDeliveryCompany =
               String(
                 args.company ||
-                conversationState.collectedSlots.delivery_company ||
-                conversationState.collectedSlots.delivery_partner ||
-                conversationState.collectedSlots.company ||
+                conversationStateRef.current.collectedSlots.delivery_company ||
+                conversationStateRef.current.collectedSlots.delivery_partner ||
+                conversationStateRef.current.collectedSlots.company ||
                 "Delivery"
               ).trim();
             const resolvedRecipientCompany =
               String(
                 args.recipient_company ||
-                conversationState.collectedSlots.recipient_company ||
-                conversationState.collectedSlots.target_company ||
-                conversationState.collectedSlots.department ||
+                conversationStateRef.current.collectedSlots.recipient_company ||
+                conversationStateRef.current.collectedSlots.target_company ||
+                conversationStateRef.current.collectedSlots.department ||
                 "Greenscape"
               ).trim();
             const resolvedRecipient =
               String(
                 args.recipient ||
-                conversationState.collectedSlots.recipient_name ||
-                conversationState.collectedSlots.meeting_with ||
-                conversationState.collectedSlots.recipient ||
+                conversationStateRef.current.collectedSlots.recipient_name ||
+                conversationStateRef.current.collectedSlots.meeting_with ||
+                conversationStateRef.current.collectedSlots.recipient ||
                 "N/A"
               ).trim();
             const resolvedDepartment = resolvedRecipientCompany || "Delivery";
@@ -1753,13 +2316,13 @@ function ReceptionistApp() {
             };
           }
           else if (name === "end_interaction") {
-            const hasCollectedAnySlot = Object.values(conversationState.collectedSlots).some(
+            const hasCollectedAnySlot = Object.values(conversationStateRef.current.collectedSlots).some(
               (value) => hasMeaningfulValue(value)
             );
             if (!hasSavedVisitorRef.current && hasCollectedAnySlot) {
               const readiness = getMissingFieldsBeforePhoto(
-                conversationState.intent,
-                conversationState.collectedSlots
+                conversationStateRef.current.intent,
+                conversationStateRef.current.collectedSlots
               );
               const pending = [...readiness.missing];
               if (!visitorCheckInPhotoRef.current) {
@@ -1767,7 +2330,7 @@ function ReceptionistApp() {
               }
               if (
                 readiness.flow === "delivery" &&
-                !hasMeaningfulValue(conversationState.collectedSlots.approval_decision)
+                !hasMeaningfulValue(conversationStateRef.current.collectedSlots.approval_decision)
               ) {
                 pending.push("delivery_approval");
               }
@@ -1805,7 +2368,11 @@ function ReceptionistApp() {
               setExpressionCue("goodbye_formal");
               fireGesture('bow', undefined, 3);
               console.log("Interaction ended. Resetting in 5 seconds...");
-              setTimeout(() => {
+              if (endSessionResetTimerRef.current) {
+                clearTimeout(endSessionResetTimerRef.current);
+              }
+              endSessionResetTimerRef.current = setTimeout(() => {
+                endSessionResetTimerRef.current = null;
                 stopCameraPreview();
                 disconnectSession();
                 setVideoStream(null);
@@ -1813,14 +2380,51 @@ function ReceptionistApp() {
                 visitorCheckInPhotoRef.current = null;
                 setLastAudioText("");
                 setExpressionCue("neutral_professional");
-              }, 6000);
+              }, 5000);
               result = { status: "success", message: "Resetting kiosk." };
             }
           }
           else if (name === "capture_photo") {
+            const hasExistingVisitorId = Number(
+              conversationStateRef.current.collectedSlots.visitor_id_external || ""
+            );
+            if (
+              visitorFlowRef.current.isExistingVisitor ||
+              visitorFlowRef.current.mode === "existing_visitor" ||
+              (Number.isFinite(hasExistingVisitorId) && hasExistingVisitorId > 0)
+            ) {
+              result = {
+                status: "blocked",
+                message:
+                  "Photo capture is not required for returning visitors. Please continue with company and host details.",
+              };
+              responses.push({
+                name: name,
+                id: fc.id,
+                response: { result },
+              });
+              continue;
+            }
+            if (!canCapturePhoto(visitorFlowRef.current)) {
+              result = {
+                status: "blocked",
+                message: "Photo capture is not required for this visitor. Please continue with destination details.",
+              };
+              console.warn("[VisitorFlow] blocked photo transition", {
+                state: visitorFlowRef.current.state,
+                isExistingVisitor: visitorFlowRef.current.isExistingVisitor,
+                destinationResolved: visitorFlowRef.current.destinationResolved,
+              });
+              responses.push({
+                name: name,
+                id: fc.id,
+                response: { result },
+              });
+              continue;
+            }
             const photoReadiness = getMissingFieldsBeforePhoto(
-              conversationState.intent,
-              conversationState.collectedSlots
+              conversationStateRef.current.intent,
+              conversationStateRef.current.collectedSlots
             );
             if (photoReadiness.missing.length > 0) {
               if (activeSessionId) {
@@ -1830,7 +2434,7 @@ function ReceptionistApp() {
                   content: JSON.stringify({
                     flow: photoReadiness.flow,
                     missing_fields: photoReadiness.missing,
-                    intent: conversationState.intent || "",
+                    intent: conversationStateRef.current.intent || "",
                   }),
                 });
               }
@@ -1841,9 +2445,16 @@ function ReceptionistApp() {
                 message:
                   photoReadiness.flow === "delivery"
                     ? "Collect delivery person name, delivery company, recipient company, and recipient name before photo capture."
-                    : "Collect name, phone, and whom they want to visit before photo capture.",
+                    : "Collect name, phone, where they came from, company they want to meet, and person or unit before photo capture.",
               };
             } else {
+              const captureState =
+                visitorFlowRef.current.mode === "delivery"
+                  ? "DELIVERY_CAPTURE_PHOTO"
+                  : "NEW_VISITOR_CAPTURE_PHOTO";
+              if (visitorFlowRef.current.state !== captureState) {
+                void setVisitorFlowState(captureState, "capture_photo_started");
+              }
               // Respond to Gemini immediately so the Live API doesn't time out
               // waiting for the tool response during the 5-second countdown.
               result = {
@@ -1857,6 +2468,19 @@ function ReceptionistApp() {
                 const captured = await captureCheckInPhotoAfterCountdown("tool_call_after_5s_still_pose", 5000);
                 if (!captured) {
                   console.warn("[capture_photo] Background capture failed:", lastCaptureErrorRef.current);
+                } else {
+                  visitorFlowRef.current = {
+                    ...visitorFlowRef.current,
+                    photoCaptured: true,
+                    photoUploaded: true,
+                  };
+                  void setVisitorFlowState(
+                    visitorFlowRef.current.mode === "delivery"
+                      ? "DELIVERY_UPLOAD_PHOTO"
+                      : "NEW_VISITOR_UPLOAD_PHOTO",
+                    "photo_capture_completed"
+                  );
+                  console.info("[VisitorFlow] photo step entered and completed");
                 }
               })();
             }
@@ -1870,6 +2494,11 @@ function ReceptionistApp() {
           id: fc.id,
           response: { result },
         });
+        console.info("[perf] tool_handler_end", {
+          tool: name,
+          t: Date.now(),
+          duration_ms: Date.now() - toolStartedAt,
+        });
       }
 
       if (responses.length === 0) {
@@ -1881,6 +2510,10 @@ function ReceptionistApp() {
         return;
       }
 
+      console.info("[VisitorFlow] assistant reply emitted", {
+        at: Date.now(),
+        responseCount: responses.length,
+      });
       client.sendToolResponse({ functionResponses: responses });
     };
 
@@ -1888,7 +2521,7 @@ function ReceptionistApp() {
     return () => {
       client.off("toolcall", onToolCall);
     };
-  }, [client, connected, conversationState, disconnectSession, fireGesture, captureCheckInPhotoAfterCountdown, waitForCaptureSettled, persistSecuritySnapshotIfNeeded, stopCameraPreview]);
+  }, [client, connected, disconnectSession, fireGesture, captureCheckInPhotoAfterCountdown, waitForCaptureSettled, persistSecuritySnapshotIfNeeded, setVisitorFlowState, stopCameraPreview]);
 
   return (
     <div className="kiosk-screen">
@@ -1921,12 +2554,8 @@ function ReceptionistApp() {
         />
       </div>
 
-      {/* ── 3 Action Cards ──────────────────────────────────────── */}
+      {/* ── New Visitor & Delivery (voice via Pratik) ───────────── */}
       <div className="kiosk-cards-row">
-        <div className="kiosk-card">
-          <span className="material-symbols-outlined kiosk-card-icon">qr_code_2</span>
-          <span className="kiosk-card-label">QR Code / Passcode</span>
-        </div>
         <div className="kiosk-card">
           <span className="material-symbols-outlined kiosk-card-icon">person_add</span>
           <span className="kiosk-card-label">New Visitor</span>

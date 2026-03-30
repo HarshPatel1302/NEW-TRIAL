@@ -6,7 +6,7 @@ services:
     environment:
       POSTGRES_DB: receptionist
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
     volumes:
       - receptionist_pg_prod_data:/var/lib/postgresql/data
     healthcheck:
@@ -26,12 +26,13 @@ services:
         condition: service_healthy
     environment:
       PORT: 5000
-      CORS_ORIGIN: http://localhost:8080
+      # Set to your public origin(s), e.g. https://kiosk.yourcompany.com — see .env.production.example
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:8080}
       TRUST_PROXY: "1"
       PGHOST: postgres
       PGPORT: 5432
       PGUSER: postgres
-      PGPASSWORD: postgres
+      PGPASSWORD: ${POSTGRES_PASSWORD:-postgres}
       PGDATABASE: receptionist
       PGSSL: "false"
       BACKEND_API_KEY: ${BACKEND_API_KEY:-change_this_key}
@@ -55,6 +56,25 @@ services:
         REACT_APP_RECEPTIONIST_API_KEY: ${BACKEND_API_KEY:-change_this_key}
         REACT_APP_KIOSK_ID: ${REACT_APP_KIOSK_ID:-greenscape-lobby-kiosk-1}
         REACT_APP_GEMINI_API_KEY: ${REACT_APP_GEMINI_API_KEY:-}
+        REACT_APP_GATE_API_BASE_URL: ${REACT_APP_GATE_API_BASE_URL:-}
+        REACT_APP_GATE_LOGIN_API_URL: ${REACT_APP_GATE_LOGIN_API_URL:-}
+        REACT_APP_GATE_LOGIN_USERNAME: ${REACT_APP_GATE_LOGIN_USERNAME:-}
+        REACT_APP_GATE_LOGIN_PASSWORD: ${REACT_APP_GATE_LOGIN_PASSWORD:-}
+        REACT_APP_WALKIN_COMPANY_ID: ${REACT_APP_WALKIN_COMPANY_ID:-}
+        REACT_APP_MEMBER_LIST_API_URL: ${REACT_APP_MEMBER_LIST_API_URL:-}
+        REACT_APP_VISITOR_LOG_API_URL: ${REACT_APP_VISITOR_LOG_API_URL:-}
+        REACT_APP_VISITOR_NOTIFICATION_API_URL: ${REACT_APP_VISITOR_NOTIFICATION_API_URL:-}
+        REACT_APP_VISITOR_LOG_COMPANY_NAME: ${REACT_APP_VISITOR_LOG_COMPANY_NAME:-Greenscape Group}
+        REACT_APP_VISITOR_LOG_IN_GATE: ${REACT_APP_VISITOR_LOG_IN_GATE:-MAIN GATE}
+        REACT_APP_VISITOR_PURPOSE_CATEGORY_ID: ${REACT_APP_VISITOR_PURPOSE_CATEGORY_ID:-1}
+        REACT_APP_DELIVERY_PURPOSE_CATEGORY_ID: ${REACT_APP_DELIVERY_PURPOSE_CATEGORY_ID:-3}
+        REACT_APP_VISITOR_LOG_CARD_ID: ${REACT_APP_VISITOR_LOG_CARD_ID:-1}
+        REACT_APP_DELIVERY_APPROVAL_API_URL: ${REACT_APP_DELIVERY_APPROVAL_API_URL:-}
+        REACT_APP_DELIVERY_APPROVAL_API_KEY: ${REACT_APP_DELIVERY_APPROVAL_API_KEY:-}
+        REACT_APP_FORCE_LOBBY_DELIVERY_RESPONSE: ${REACT_APP_FORCE_LOBBY_DELIVERY_RESPONSE:-true}
+        REACT_APP_AVATAR_MODEL_VERSION: ${REACT_APP_AVATAR_MODEL_VERSION:-}
+        REACT_APP_VISITOR_SEARCH_URL: ${REACT_APP_VISITOR_SEARCH_URL:-}
+        REACT_APP_VR_IMAGE_UPLOAD_URL: ${REACT_APP_VR_IMAGE_UPLOAD_URL:-}
     container_name: greenscape-prod-frontend
     restart: unless-stopped
     depends_on:

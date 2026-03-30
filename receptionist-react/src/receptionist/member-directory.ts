@@ -12,6 +12,8 @@ type MemberUnitRecord = {
   id?: number;
   fk_unit_id?: number;
   member_name?: string;
+  company_name?: string;
+  tenant_name?: string;
   building_unit?: string;
   unit_flat_number?: string;
   soc_building_name?: string;
@@ -23,6 +25,8 @@ type MemberDetailRecord = {
   member_id?: number | string;
   member_first_name?: string;
   member_last_name?: string;
+  company_name?: string;
+  tenant_name?: string;
   member_email_id?: string;
   member_mobile_number?: string;
   member_type_name?: string;
@@ -42,6 +46,7 @@ export type MatchedMember = {
   unit_flat_number: string;
   soc_building_name: string;
   unit_member_name: string;
+  company_name: string;
 };
 
 export type MemberLookupResult = {
@@ -55,13 +60,23 @@ export type MemberLookupResult = {
   message?: string;
 };
 
-const GATE_LOGIN_API_URL = String(process.env.REACT_APP_GATE_LOGIN_API_URL || "").trim();
-const GATE_LOGIN_USERNAME = String(process.env.REACT_APP_GATE_LOGIN_USERNAME || "").trim();
-const GATE_LOGIN_PASSWORD = String(process.env.REACT_APP_GATE_LOGIN_PASSWORD || "").trim();
-const MEMBER_LIST_API_URL = String(
-  process.env.REACT_APP_MEMBER_LIST_API_URL || "https://socbackend.cubeone.in/api/admin/member/list"
+const GATE_LOGIN_API_URL = String(
+  process.env.REACT_APP_GATE_LOGIN_API_URL || process.env.REACT_APP_VR_LOGIN_URL || ""
 ).trim();
-const MEMBER_LIST_COMPANY_ID = String(process.env.REACT_APP_WALKIN_COMPANY_ID || "8196").trim();
+const GATE_LOGIN_USERNAME = String(
+  process.env.REACT_APP_GATE_LOGIN_USERNAME || process.env.REACT_APP_VR_LOGIN_USERNAME || ""
+).trim();
+const GATE_LOGIN_PASSWORD = String(
+  process.env.REACT_APP_GATE_LOGIN_PASSWORD || process.env.REACT_APP_VR_LOGIN_PASSWORD || ""
+).trim();
+const MEMBER_LIST_API_URL = String(
+  process.env.REACT_APP_MEMBER_LIST_API_URL ||
+    process.env.REACT_APP_VR_MEMBER_LIST_URL ||
+    "https://socbackend.cubeone.in/api/admin/member/list"
+).trim();
+const MEMBER_LIST_COMPANY_ID = String(
+  process.env.REACT_APP_WALKIN_COMPANY_ID || process.env.REACT_APP_VR_COMPANY_ID || "8196"
+).trim();
 
 const REQUEST_TIMEOUT_MS = 7000;
 const CACHE_TTL_MS = 5 * 60 * 1000;
@@ -288,7 +303,14 @@ function buildMemberName(detail: MemberDetailRecord, unit: MemberUnitRecord) {
     return fromDetail;
   }
 
-  return toDisplayText(unit.member_name) || "Unknown member";
+  return (
+    toDisplayText(unit.member_name) ||
+    toDisplayText(detail.company_name) ||
+    toDisplayText(detail.tenant_name) ||
+    toDisplayText(unit.company_name) ||
+    toDisplayText(unit.tenant_name) ||
+    "Unknown member"
+  );
 }
 
 function memberToSearchFields(member: MatchedMember) {
@@ -298,6 +320,9 @@ function memberToSearchFields(member: MatchedMember) {
     member.building_unit,
     member.unit_flat_number,
     member.soc_building_name,
+    member.company_name,
+    String(member.unit_id || ""),
+    String(member.member_id || ""),
     member.member_email_id,
     member.member_mobile_number,
   ]
@@ -386,6 +411,9 @@ function flattenMembers(rows: MemberUnitRecord[]): MatchedMember[] {
         unit_flat_number: toDisplayText(unit.unit_flat_number),
         soc_building_name: toDisplayText(unit.soc_building_name),
         unit_member_name: toDisplayText(unit.member_name),
+        company_name: toDisplayText(
+          detail.company_name || detail.tenant_name || unit.company_name || unit.tenant_name
+        ),
       });
     });
   });
@@ -406,6 +434,7 @@ function compactMembers(members: MatchedMember[]) {
     unit_flat_number: member.unit_flat_number,
     soc_building_name: member.soc_building_name,
     unit_member_name: member.unit_member_name,
+    company_name: member.company_name,
   }));
 }
 
@@ -438,6 +467,7 @@ export function decodeMembersFromNotes(encoded: string) {
         unit_flat_number: toDisplayText(item?.unit_flat_number),
         soc_building_name: toDisplayText(item?.soc_building_name),
         unit_member_name: toDisplayText(item?.unit_member_name),
+        company_name: toDisplayText(item?.company_name),
       }))
       .filter((item) => Number.isFinite(item.member_id) && item.member_id > 0);
   } catch {

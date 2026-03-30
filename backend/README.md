@@ -32,7 +32,7 @@ npm run db:init
 npm run dev
 ```
 
-Server runs on `http://localhost:5000` by default.
+Server runs on `http://localhost:5050` by default in `.env.example` (port **5000** is often taken by macOS AirPlay; set `PORT` as needed).
 All `/api/*` routes (except `/api/health*`) require `x-api-key` when `BACKEND_API_KEY` is configured.
 
 ## 5) Point frontend to backend
@@ -40,7 +40,7 @@ All `/api/*` routes (except `/api/health*`) require `x-api-key` when `BACKEND_AP
 In `receptionist-react/.env.local` add:
 
 ```env
-REACT_APP_RECEPTIONIST_API_URL=http://localhost:5000/api
+REACT_APP_RECEPTIONIST_API_URL=http://localhost:5050/api
 REACT_APP_RECEPTIONIST_API_KEY=change_this_key
 REACT_APP_KIOSK_ID=greenscape-lobby-kiosk-1
 ```
@@ -64,9 +64,9 @@ TRUST_PROXY=false
 
 ## Export URLs
 
-- Visitors CSV: `http://localhost:5000/api/exports/visitors.csv`
-- Visitors XLSX: `http://localhost:5000/api/exports/visitors.xlsx`
-- Sessions CSV: `http://localhost:5000/api/exports/sessions.csv`
+- Visitors CSV: `http://localhost:5050/api/exports/visitors.csv`
+- Visitors XLSX: `http://localhost:5050/api/exports/visitors.xlsx`
+- Sessions CSV: `http://localhost:5050/api/exports/sessions.csv`
 
 ## Maintenance jobs
 

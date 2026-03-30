@@ -37,6 +37,22 @@ app.use(express.json({ limit: "1mb" }));
 app.use(buildRateLimiter());
 app.use(buildAuditMiddleware());
 
+// This process is the JSON API only — the React kiosk runs separately (e.g. CRA on port 3000).
+app.get("/", (_req, res) => {
+  res.type("html");
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Receptionist API</title></head>
+<body style="font-family:system-ui,sans-serif;max-width:36rem;margin:2rem;line-height:1.5">
+  <h1>Receptionist backend</h1>
+  <p>This port serves the <strong>API</strong> only. Open the <strong>virtual receptionist app</strong> in another terminal:</p>
+  <pre style="background:#f4f4f5;padding:0.75rem;border-radius:6px">cd receptionist-react && npm start</pre>
+  <p>Then open <a href="http://localhost:3000">http://localhost:3000</a> (or the port shown in the terminal).</p>
+  <p>API health: <a href="/api/health">/api/health</a> · <a href="/api/health/ready">/api/health/ready</a></p>
+</body>
+</html>`);
+});
+
 function normalizePhone(phone) {
   if (!phone) return null;
   const digits = String(phone).replace(/\D/g, "");

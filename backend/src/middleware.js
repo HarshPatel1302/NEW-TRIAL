@@ -13,6 +13,13 @@ function buildAuthMiddleware() {
   }
 
   return (req, res, next) => {
+    // When this middleware is mounted at `/api`, `req.path` is relative (e.g. `/health`).
+    // Keep health checks public even if route registration order changes.
+    const path = String(req.path || "");
+    if (path === "/health" || path === "/health/live" || path === "/health/ready") {
+      return next();
+    }
+
     const headerKey = (req.header("x-api-key") || "").trim();
     const authHeader = (req.header("authorization") || "").trim();
     const bearerKey = authHeader.toLowerCase().startsWith("bearer ")

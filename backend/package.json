@@ -7,6 +7,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
+    "verify-api": "bash scripts/verify-api.sh",
     "db:init": "node src/init-db.js",
     "retention:run": "node src/retention.js",
     "backup:run": "node src/backup.js"

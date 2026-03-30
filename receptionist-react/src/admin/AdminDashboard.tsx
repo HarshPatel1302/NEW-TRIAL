@@ -68,7 +68,7 @@ type AuditLogRow = {
   kiosk_id: string;
 };
 
-const API_BASE = process.env.REACT_APP_RECEPTIONIST_API_URL || "http://localhost:5000/api";
+const API_BASE = process.env.REACT_APP_RECEPTIONIST_API_URL || "http://localhost:5050/api";
 const API_KEY = process.env.REACT_APP_RECEPTIONIST_API_KEY || "";
 const KIOSK_ID = process.env.REACT_APP_KIOSK_ID || "greenscape-lobby-kiosk-1";
 const AUTO_REFRESH_MS = 5000;

@@ -90,23 +90,31 @@ type GateApiClientConfig = {
 
 const REQUEST_TIMEOUT_MS = 7000;
 const GATE_API_BASE_URL = process.env.REACT_APP_GATE_API_BASE_URL || "";
-const GATE_LOGIN_API_URL = process.env.REACT_APP_GATE_LOGIN_API_URL || "";
-const GATE_LOGIN_USERNAME = process.env.REACT_APP_GATE_LOGIN_USERNAME || "";
-const GATE_LOGIN_PASSWORD = process.env.REACT_APP_GATE_LOGIN_PASSWORD || "";
-const COMPANY_ID = process.env.REACT_APP_WALKIN_COMPANY_ID || "8196";
+const GATE_LOGIN_API_URL =
+  process.env.REACT_APP_GATE_LOGIN_API_URL || process.env.REACT_APP_VR_LOGIN_URL || "";
+const GATE_LOGIN_USERNAME =
+  process.env.REACT_APP_GATE_LOGIN_USERNAME || process.env.REACT_APP_VR_LOGIN_USERNAME || "";
+const GATE_LOGIN_PASSWORD =
+  process.env.REACT_APP_GATE_LOGIN_PASSWORD || process.env.REACT_APP_VR_LOGIN_PASSWORD || "";
+const COMPANY_ID = process.env.REACT_APP_WALKIN_COMPANY_ID || process.env.REACT_APP_VR_COMPANY_ID || "8196";
 const GATE_VISITOR_LOG_API_URL = String(
   process.env.REACT_APP_VISITOR_LOG_API_URL ||
+    process.env.REACT_APP_VR_VISITOR_LOG_URL ||
     `${trimSlash(GATE_API_BASE_URL)}/api/visitor/log`
 ).trim();
 const GATE_VISITOR_NOTIFICATION_API_URL = String(
   process.env.REACT_APP_VISITOR_NOTIFICATION_API_URL ||
+    process.env.REACT_APP_VR_SEND_FCM_URL ||
     `${trimSlash(GATE_API_BASE_URL)}/api/visitor/sendFcmNotification`
 ).trim();
 const DEFAULT_VISITOR_LOG_COMPANY_NAME = String(
-  process.env.REACT_APP_VISITOR_LOG_COMPANY_NAME || "Greenscape Group"
+  process.env.REACT_APP_VISITOR_LOG_COMPANY_NAME ||
+    process.env.REACT_APP_VR_COMPANY_NAME ||
+    "Greenscape Group"
 ).trim();
 const DEFAULT_VISITOR_LOG_IN_GATE = String(
-  process.env.REACT_APP_VISITOR_LOG_IN_GATE || "MAIN GATE"
+  // process.env.REACT_APP_VISITOR_LOG_IN_GATE || process.env.REACT_APP_VR_IN_GATE || "cyberone lobby"
+   "cyberone lobby"
 ).trim();
 const DEFAULT_VISITOR_PURPOSE_CATEGORY_ID = Number(
   process.env.REACT_APP_VISITOR_PURPOSE_CATEGORY_ID || "1"
@@ -118,13 +126,54 @@ const DEFAULT_VISITOR_LOG_CARD_ID = Number(
   process.env.REACT_APP_VISITOR_LOG_CARD_ID || "1"
 );
 const RECEPTIONIST_API_BASE_URL = trimSlash(
-  process.env.REACT_APP_RECEPTIONIST_API_URL || "http://localhost:5000/api"
+  process.env.REACT_APP_RECEPTIONIST_API_URL || "http://localhost:5050/api"
 );
 const RECEPTIONIST_API_KEY = process.env.REACT_APP_RECEPTIONIST_API_KEY || "";
 const KIOSK_ID = process.env.REACT_APP_KIOSK_ID || "";
+/** Optional full URL base for GET visitor search (e.g. mock or alternate path). Query params company_id & mobile_number are set/overwritten by the client. */
+const VISITOR_SEARCH_URL_OVERRIDE = String(
+  process.env.REACT_APP_VISITOR_SEARCH_URL || process.env.REACT_APP_VR_VISITOR_SEARCH_URL || ""
+).trim();
+const VISITOR_CREATE_URL_OVERRIDE = String(
+  process.env.REACT_APP_VR_VISITOR_CREATE_URL || ""
+).trim();
+const VISITOR_IMAGE_UPLOAD_URL = String(
+  process.env.REACT_APP_VR_IMAGE_UPLOAD_URL || process.env.REACT_APP_IMAGE_UPLOAD_URL || ""
+).trim();
+const MAX_UPLOAD_IMAGE_BYTES = 500 * 1024;
+
+export type VisitorSearchLookupResult = {
+  configured: boolean;
+  ok: boolean;
+  found: boolean;
+  statusCode?: number;
+  message?: string;
+  visitor?: {
+    id: number;
+    name: string;
+    mobile: string;
+    visitorImage: string;
+    comingFrom: string;
+  } | null;
+};
 
 function onlyDigits(input: string) {
   return String(input || "").replace(/\D/g, "");
+}
+
+export function normalizeIndianMobile(input: unknown) {
+  const digits = onlyDigits(String(input || ""));
+  if (!digits) return "";
+  if (digits.length === 10) return digits;
+  if (digits.length === 11 && digits.startsWith("0")) return digits.slice(1);
+  if (digits.length === 12 && digits.startsWith("91")) return digits.slice(2);
+  if (digits.length > 10) return digits.slice(-10);
+  return digits;
+}
+
+export function isValidIndianMobile(input: unknown) {
+  const normalized = normalizeIndianMobile(input);
+  return /^[6-9]\d{9}$/.test(normalized);
 }
 
 function sanitizeText(input: string) {
@@ -225,12 +274,16 @@ function buildMemberDetailsPayload(details: ExternalWalkInDetails) {
         )
       );
 
+      const memberIdsPayload =
+        memberIds && /^\d+$/.test(memberIds) ? Number(memberIds) : memberIds;
+      const mobileDigits = onlyDigits(mobile);
+
       return {
         unit_id: unitId,
         building_unit: buildingUnit,
-        member_ids: memberIds,
+        member_ids: memberIdsPayload,
         name,
-        mobile_number: mobile,
+        mobile_number: mobileDigits.length >= 10 ? Number(mobileDigits) : mobile,
         email,
         member_old_sso_id: memberOldSsoId,
       };
@@ -297,19 +350,44 @@ function extractVisitorLogId(data: unknown): number | null {
   return null;
 }
 
-function buildNotificationPhotoFieldValue(photo: string) {
+/**
+ * Gate `sendFcmNotification` expects multipart `file` like curl `--form file=@path`.
+ * Appending a string does not produce a real file part; use a Blob filename.
+ */
+function visitorPhotoToImageBlob(photo: string): Blob | null {
   const normalized = sanitizeText(photo);
-  if (!normalized) {
-    return "";
+  if (!normalized || isHttpUrl(normalized)) {
+    return null;
   }
-  if (isHttpUrl(normalized) || normalized.startsWith("data:image/")) {
-    return normalized;
+  if (normalized.startsWith("data:")) {
+    const match = /^data:([^;]+);base64,(.+)$/i.exec(normalized.replace(/\s/g, ""));
+    if (match) {
+      try {
+        const binary = atob(match[2]);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i += 1) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        const mime = String(match[1] || "image/jpeg").split(";")[0].trim();
+        return new Blob([bytes], { type: mime || "image/jpeg" });
+      } catch {
+        return null;
+      }
+    }
+    return null;
   }
-  const rawBase64 = toBase64Payload(normalized);
-  if (!rawBase64) {
-    return "";
+  try {
+    const raw = toBase64Payload(normalized);
+    if (!raw) return null;
+    const binary = atob(raw);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return new Blob([bytes], { type: "image/jpeg" });
+  } catch {
+    return null;
   }
-  return `data:image/jpeg;base64,${rawBase64}`;
 }
 
 function toBase64Payload(input: string) {
@@ -378,6 +456,12 @@ async function parseEnvelopeSafe(response: Response): Promise<ApiEnvelope> {
   }
 }
 
+type UploadPhotoResult = {
+  ok: boolean;
+  url: string;
+  error: string;
+};
+
 async function uploadVisitorPhotoToCloud(
   photo: string,
   details: ExternalWalkInDetails,
@@ -389,13 +473,30 @@ async function uploadVisitorPhotoToCloud(
     refreshAuthToken?: () => Promise<string>;
   } = {},
   retryIfUnauthorized = true
-): Promise<string> {
+): Promise<UploadPhotoResult> {
   const normalizedPhoto = sanitizeText(photo);
-  if (!normalizedPhoto || !RECEPTIONIST_API_BASE_URL) {
-    return "";
+  if (!normalizedPhoto) {
+    return { ok: false, url: "", error: "Photo is missing." };
   }
 
-  const requestUrl = `${RECEPTIONIST_API_BASE_URL}/media/upload-cover`;
+  const imageBlob = visitorPhotoToImageBlob(normalizedPhoto);
+  if (!imageBlob) {
+    return { ok: false, url: "", error: "Unable to parse captured photo." };
+  }
+  if (imageBlob.size > MAX_UPLOAD_IMAGE_BYTES) {
+    return {
+      ok: false,
+      url: "",
+      error: `Captured image exceeds 500KB (${Math.round(imageBlob.size / 1024)}KB). Please retake photo.`,
+    };
+  }
+
+  const requestUrl =
+    VISITOR_IMAGE_UPLOAD_URL ||
+    (RECEPTIONIST_API_BASE_URL ? `${RECEPTIONIST_API_BASE_URL}/media/upload-cover` : "");
+  if (!requestUrl) {
+    return { ok: false, url: "", error: "Image upload API is not configured." };
+  }
   const controller = new AbortController();
   const timeout: ReturnType<typeof setTimeout> = setTimeout(
     () => controller.abort(),
@@ -408,21 +509,37 @@ async function uploadVisitorPhotoToCloud(
       url: requestUrl,
     });
 
-    const response = await fetch(requestUrl, {
-      method: "POST",
-      headers: buildReceptionistApiHeaders(),
-      body: JSON.stringify({
-        photoDataUrl: normalizedPhoto,
-        fileNameHint: buildPhotoFileNameHint(details),
-        authToken: sanitizeText(authContext.authToken || ""),
-        loginUrl: sanitizeText(authContext.loginUrl || ""),
-        username: sanitizeText(authContext.username || ""),
-        password: String(authContext.password || ""),
-      }),
-      signal: controller.signal,
-    });
-
-    const payload = await parseEnvelopeSafe(response);
+    const fileName = `${buildPhotoFileNameHint(details)}.jpg`;
+    let response: Response;
+    let payload: ApiEnvelope = {};
+    if (VISITOR_IMAGE_UPLOAD_URL) {
+      const formData = new FormData();
+      formData.append("cover_image", imageBlob, fileName);
+      response = await fetch(requestUrl, {
+        method: "POST",
+        headers: authContext.authToken
+          ? { Authorization: `Bearer ${sanitizeText(authContext.authToken)}` }
+          : undefined,
+        body: formData,
+        signal: controller.signal,
+      });
+      payload = await parseEnvelopeSafe(response);
+    } else {
+      response = await fetch(requestUrl, {
+        method: "POST",
+        headers: buildReceptionistApiHeaders(),
+        body: JSON.stringify({
+          photoDataUrl: normalizedPhoto,
+          fileNameHint: buildPhotoFileNameHint(details),
+          authToken: sanitizeText(authContext.authToken || ""),
+          loginUrl: sanitizeText(authContext.loginUrl || ""),
+          username: sanitizeText(authContext.username || ""),
+          password: String(authContext.password || ""),
+        }),
+        signal: controller.signal,
+      });
+      payload = await parseEnvelopeSafe(response);
+    }
     console.info("[WalkInSync] Visitor photo upload response", {
       status: response.status,
       ok: response.ok,
@@ -450,18 +567,31 @@ async function uploadVisitorPhotoToCloud(
     }
 
     if (!response.ok) {
-      return "";
+      return {
+        ok: false,
+        url: "",
+        error: toMessageText(payload?.message) || `Image upload failed (HTTP ${response.status})`,
+      };
     }
 
     const s3Link = sanitizeText(
       ((payload?.data as Record<string, unknown> | undefined)?.s3_link as string) ||
         ((payload?.data as Record<string, unknown> | undefined)?.s3Link as string) ||
+        ((payload?.data as Record<string, unknown> | undefined)?.url as string) ||
+        ((payload?.data as Record<string, unknown> | undefined)?.cover_image as string) ||
         ""
     );
-    return s3Link;
+    if (!s3Link && VISITOR_IMAGE_UPLOAD_URL) {
+      return { ok: false, url: "", error: "Image upload API did not return an image URL." };
+    }
+    return { ok: true, url: s3Link, error: "" };
   } catch (error) {
     console.warn("[WalkInSync] Visitor photo upload failed", error);
-    return "";
+    return {
+      ok: false,
+      url: "",
+      error: error instanceof Error ? error.message : "Image upload failed.",
+    };
   } finally {
     clearTimeout(timeout);
   }
@@ -729,9 +859,9 @@ class GateVisitorApiClient {
     formData.append("self_check_in", "false");
     formData.append("is_staff", String(Boolean(details.isStaff ?? false)));
 
-    const photoValue = buildNotificationPhotoFieldValue(sanitizeText(details.photo || ""));
-    if (includeFileField && photoValue) {
-      formData.append("file", photoValue);
+    const photoBlob = visitorPhotoToImageBlob(sanitizeText(details.photo || ""));
+    if (includeFileField && photoBlob) {
+      formData.append("file", photoBlob, "visitor.jpg");
     }
 
     return formData;
@@ -773,6 +903,7 @@ class GateVisitorApiClient {
     result: FieldSyncResult;
     found: boolean;
     visitorId: number | null;
+    visitorRow?: Record<string, unknown> | null;
   }> {
     if (!this.hasApiConfig() || !this.hasLoginConfig()) {
       return {
@@ -784,6 +915,7 @@ class GateVisitorApiClient {
         },
         found: false,
         visitorId: null,
+        visitorRow: null,
       };
     }
 
@@ -799,22 +931,41 @@ class GateVisitorApiClient {
         },
         found: false,
         visitorId: null,
+        visitorRow: null,
       };
     }
 
-    const requestUrl = new URL(`${this.baseUrl}/api/visitor/entry`);
-    requestUrl.searchParams.set("company_id", this.companyId);
-    requestUrl.searchParams.set("mobile_number", mobile);
-    console.info("[WalkInSync] Search API call", {
+    let searchUrl: string;
+    if (VISITOR_SEARCH_URL_OVERRIDE) {
+      const requestUrl = new URL(
+        VISITOR_SEARCH_URL_OVERRIDE.startsWith("http")
+          ? VISITOR_SEARCH_URL_OVERRIDE
+          : `https://${VISITOR_SEARCH_URL_OVERRIDE}`
+      );
+      requestUrl.searchParams.set("company_id", this.companyId);
+      requestUrl.searchParams.set("mobile_number", mobile);
+      searchUrl = requestUrl.toString();
+    } else {
+      const requestUrl = new URL(`${this.baseUrl}/api/visitor/entry`);
+      requestUrl.searchParams.set("company_id", this.companyId);
+      requestUrl.searchParams.set("mobile_number", mobile);
+      searchUrl = requestUrl.toString();
+    }
+
+    const startedAt = Date.now();
+    console.info("[perf] visitor_search_start", {
+      t: startedAt,
       method: "GET",
-      url: requestUrl.toString(),
+      url: searchUrl,
     });
 
-    const { response, payload } = await this.requestWithAuth(requestUrl.toString(), {
+    const { response, payload } = await this.requestWithAuth(searchUrl, {
       method: "GET",
     });
 
-    console.info("[WalkInSync] Search API response", {
+    console.info("[perf] visitor_search_end", {
+      t: Date.now(),
+      duration_ms: Date.now() - startedAt,
       status: response.status,
       ok: response.ok,
       message: toMessageText(payload?.message),
@@ -838,7 +989,8 @@ class GateVisitorApiClient {
       ? (payload as VisitorSearchResponse).data || []
       : [];
     const found = rows.length > 0;
-    const visitorId = found ? extractVisitorId(rows[0]) : null;
+    const firstRow = found ? rows[0] : null;
+    const visitorId = firstRow ? extractVisitorId(firstRow) : null;
 
     return {
       result: {
@@ -851,6 +1003,7 @@ class GateVisitorApiClient {
       },
       found,
       visitorId,
+      visitorRow: firstRow,
     };
   }
 
@@ -875,7 +1028,7 @@ class GateVisitorApiClient {
       };
     }
 
-    const requestUrl = `${this.baseUrl}/api/visitor/entry`;
+    const requestUrl = VISITOR_CREATE_URL_OVERRIDE || `${this.baseUrl}/api/visitor/entry`;
     const normalizedCameFrom = sanitizeText(details.cameFrom);
     const normalizedMeetingWith = sanitizeText(details.meetingWith);
     const normalizedPhoto = sanitizeText(details.photo || "");
@@ -886,7 +1039,7 @@ class GateVisitorApiClient {
       if (isHttpUrl(normalizedPhoto)) {
         visitorImagePayload = normalizedPhoto;
       } else {
-        const uploadedS3Link = await uploadVisitorPhotoToCloud(normalizedPhoto, details, {
+        const uploadedPhoto = await uploadVisitorPhotoToCloud(normalizedPhoto, details, {
           authToken: this.accessToken || "",
           loginUrl: this.loginUrl,
           username: this.username,
@@ -896,8 +1049,16 @@ class GateVisitorApiClient {
             return this.accessToken || "";
           },
         });
-        if (uploadedS3Link) {
-          visitorImagePayload = uploadedS3Link;
+        if (!uploadedPhoto.ok) {
+          return {
+            field: "add_visitor_entry",
+            configured: true,
+            ok: false,
+            error: uploadedPhoto.error || "Photo upload failed.",
+          };
+        }
+        if (uploadedPhoto.url) {
+          visitorImagePayload = uploadedPhoto.url;
         }
       }
     }
@@ -912,7 +1073,9 @@ class GateVisitorApiClient {
       meeting_with: normalizedMeetingWith,
     };
 
-    console.info("[WalkInSync] Add API call", {
+    const startedAt = Date.now();
+    console.info("[perf] visitor_create_start", {
+      t: startedAt,
       method: "POST",
       url: requestUrl,
       payload,
@@ -927,7 +1090,9 @@ class GateVisitorApiClient {
     });
     const typed = responsePayload as VisitorAddResponse;
 
-    console.info("[WalkInSync] Add API response", {
+    console.info("[perf] visitor_create_end", {
+      t: Date.now(),
+      duration_ms: Date.now() - startedAt,
       status: response.status,
       ok: response.ok,
       message: toMessageText(typed?.message),
@@ -978,7 +1143,9 @@ class GateVisitorApiClient {
     }
 
     const payload = this.buildVisitorLogPayload(details, visitorId);
-    console.info("[WalkInSync] Visitor log API call", {
+    const startedAt = Date.now();
+    console.info("[perf] visitor_log_start", {
+      t: startedAt,
       method: "POST",
       url: GATE_VISITOR_LOG_API_URL,
       payload,
@@ -997,7 +1164,9 @@ class GateVisitorApiClient {
     const typed = responsePayload as VisitorLogResponse;
     const visitorLogId = extractVisitorLogId(typed?.data || typed);
 
-    console.info("[WalkInSync] Visitor log API response", {
+    console.info("[perf] visitor_log_end", {
+      t: Date.now(),
+      duration_ms: Date.now() - startedAt,
       status: response.status,
       ok: response.ok,
       message: toMessageText(typed?.message),
@@ -1075,7 +1244,9 @@ class GateVisitorApiClient {
       memberMobileNumber: primaryMember.memberMobileNumber,
     });
 
-    console.info("[WalkInSync] Visitor notification API call", {
+    const startedAt = Date.now();
+    console.info("[perf] notification_start", {
+      t: startedAt,
       method: "POST",
       url: GATE_VISITOR_NOTIFICATION_API_URL,
       visitor_id: visitorId,
@@ -1118,7 +1289,9 @@ class GateVisitorApiClient {
       messageText = toMessageText(typed?.message);
     }
 
-    console.info("[WalkInSync] Visitor notification API response", {
+    console.info("[perf] notification_end", {
+      t: Date.now(),
+      duration_ms: Date.now() - startedAt,
       status: response.status,
       ok: response.ok,
       message: messageText,
@@ -1178,6 +1351,8 @@ function getGateApiClient() {
 export async function syncWalkInDetailsToExternalApis(
   details: ExternalWalkInDetails
 ): Promise<ExternalSyncResult> {
+  const startedAt = Date.now();
+  console.info("[flow] sync_walkin_start", { t: startedAt, intent: details.intent || "" });
   const client = getGateApiClient();
   const search = await client.searchVisitor(details);
   let resolvedVisitorId = search.visitorId;
@@ -1226,9 +1401,93 @@ export async function syncWalkInDetailsToExternalApis(
       .filter((result) => result.configured && !result.skipped)
       .every((result) => result.ok);
 
-  return {
+  const output = {
     attempted,
     allSuccessful,
     results,
   };
+  console.info("[flow] sync_walkin_end", {
+    t: Date.now(),
+    duration_ms: Date.now() - startedAt,
+    attempted,
+    allSuccessful,
+  });
+  return output;
+}
+
+export async function lookupVisitorByMobile(mobile: string): Promise<VisitorSearchLookupResult> {
+  const normalized = normalizeIndianMobile(mobile);
+  if (!isValidIndianMobile(normalized)) {
+    return {
+      configured: true,
+      ok: false,
+      found: false,
+      message: "Please provide a valid 10-digit Indian mobile number.",
+      visitor: null,
+    };
+  }
+
+  const client = getGateApiClient();
+  const search = await client.searchVisitor({
+    name: "",
+    phone: normalized,
+    cameFrom: "",
+    meetingWith: "",
+  });
+
+  if (!search.result.configured) {
+    return {
+      configured: false,
+      ok: false,
+      found: false,
+      message: search.result.error || "Visitor search API not configured.",
+      visitor: null,
+    };
+  }
+
+  if (!search.result.ok) {
+    return {
+      configured: true,
+      ok: false,
+      found: false,
+      statusCode: search.result.statusCode,
+      message: search.result.error || search.result.message || "Visitor search failed.",
+      visitor: null,
+    };
+  }
+
+  if (!search.found || !search.visitorRow) {
+    return {
+      configured: true,
+      ok: true,
+      found: false,
+      statusCode: search.result.statusCode,
+      message: search.result.message || "Visitor not found.",
+      visitor: null,
+    };
+  }
+
+  const row = search.visitorRow;
+  return {
+    configured: true,
+    ok: true,
+    found: true,
+    statusCode: search.result.statusCode,
+    message: search.result.message || "Visitor found successfully.",
+    visitor: {
+      id: extractVisitorId(row) || 0,
+      name: sanitizeText(String(row.name || row.visitor_name || "")),
+      mobile: sanitizeText(String(row.mobile || row.mobile_number || normalized)),
+      visitorImage: sanitizeText(String(row.visitor_image || "")),
+      comingFrom: sanitizeText(String(row.coming_from || row.came_from || "")),
+    },
+  };
+}
+
+export async function warmupVisitorAuth(): Promise<void> {
+  try {
+    getGateApiClient();
+  } catch (error) {
+    console.warn("[WalkInSync] Warmup auth skipped", error);
+  }
 }
