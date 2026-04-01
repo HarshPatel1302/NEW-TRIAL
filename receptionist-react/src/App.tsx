@@ -425,6 +425,8 @@ function ReceptionistApp() {
   const lastCaptureErrorRef = useRef<string>("");
   /** Clears prior reset timers so end_interaction cannot stack multiple disconnects. */
   const endSessionResetTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const transientDisconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isAwaitingReconnectRef = useRef(false);
   /** Dedupes identical assistant text bursts from the model (reduces repeated bubble / perceived duplicate TTS). */
   const lastAssistantTextDedupeRef = useRef<{ text: string; at: number }>({ text: "", at: 0 });
   const visitorFlowRef = useRef(createVisitorFlowSession());
@@ -858,52 +860,83 @@ function ReceptionistApp() {
     let cancelled = false;
 
     if (connected) {
-      void warmupVisitorAuth();
-      visitorFlowRef.current = createVisitorFlowSession();
-      void setVisitorFlowState("ASK_PHONE", "session_connected");
-      setConversationState({ collectedSlots: {} });
-      hasSavedVisitorRef.current = false;
-      hasPersistedSecuritySnapshotRef.current = false;
-      sessionPhotoRef.current = null;
-      visitorCheckInPhotoRef.current = null;
-      captureInFlightRef.current = false;
-      const kioskId = process.env.REACT_APP_KIOSK_ID || "greenscape-lobby-kiosk";
-      void DatabaseManager.startSession({ kioskId }).then((sessionId) => {
-        if (!cancelled && sessionId) {
-          sessionIdRef.current = sessionId;
-        }
-      });
-    } else {
-      visitorFlowRef.current = createVisitorFlowSession();
-      if (endSessionResetTimerRef.current) {
-        clearTimeout(endSessionResetTimerRef.current);
-        endSessionResetTimerRef.current = null;
+      if (transientDisconnectTimerRef.current) {
+        clearTimeout(transientDisconnectTimerRef.current);
+        transientDisconnectTimerRef.current = null;
       }
-      setConversationState({ collectedSlots: {} });
-      lastLoggedAssistantTextRef.current = "";
-      stopCameraPreview();
-      const activeSessionId = sessionIdRef.current;
-      sessionIdRef.current = null;
-      if (activeSessionId) {
-        void (async () => {
-          await waitForCaptureSettled();
-          const shouldPersistSnapshot =
-            !!sessionPhotoRef.current &&
-            !hasSavedVisitorRef.current &&
-            !hasPersistedSecuritySnapshotRef.current;
-          if (shouldPersistSnapshot) {
-            await persistSecuritySnapshotIfNeeded(activeSessionId);
+      const isReconnectResume = isAwaitingReconnectRef.current && !!sessionIdRef.current;
+      isAwaitingReconnectRef.current = false;
+
+      if (isReconnectResume) {
+        console.info("[VisitorFlow] transient reconnect recovered; preserving session state");
+      } else {
+        void warmupVisitorAuth();
+        visitorFlowRef.current = createVisitorFlowSession();
+        void setVisitorFlowState("ASK_PHONE", "session_connected");
+        setConversationState({ collectedSlots: {} });
+        hasSavedVisitorRef.current = false;
+        hasPersistedSecuritySnapshotRef.current = false;
+        sessionPhotoRef.current = null;
+        visitorCheckInPhotoRef.current = null;
+        captureInFlightRef.current = false;
+        const kioskId = process.env.REACT_APP_KIOSK_ID || "greenscape-lobby-kiosk";
+        void DatabaseManager.startSession({ kioskId }).then((sessionId) => {
+          if (!cancelled && sessionId) {
+            sessionIdRef.current = sessionId;
           }
-          await DatabaseManager.endSession(activeSessionId, {
-            status: "disconnected",
-            summary: "Live connection closed before explicit end_interaction.",
-          });
-          captureInFlightRef.current = false;
-          hasSavedVisitorRef.current = false;
-          hasPersistedSecuritySnapshotRef.current = false;
-          sessionPhotoRef.current = null;
-          visitorCheckInPhotoRef.current = null;
-        })();
+        });
+      }
+    } else {
+      const activeSessionId = sessionIdRef.current;
+      if (activeSessionId) {
+        isAwaitingReconnectRef.current = true;
+        if (transientDisconnectTimerRef.current) {
+          clearTimeout(transientDisconnectTimerRef.current);
+        }
+        transientDisconnectTimerRef.current = setTimeout(() => {
+          transientDisconnectTimerRef.current = null;
+          if (connected) return;
+          isAwaitingReconnectRef.current = false;
+          visitorFlowRef.current = createVisitorFlowSession();
+          if (endSessionResetTimerRef.current) {
+            clearTimeout(endSessionResetTimerRef.current);
+            endSessionResetTimerRef.current = null;
+          }
+          setConversationState({ collectedSlots: {} });
+          lastLoggedAssistantTextRef.current = "";
+          stopCameraPreview();
+          const finalSessionId = sessionIdRef.current;
+          sessionIdRef.current = null;
+          if (!finalSessionId) return;
+          void (async () => {
+            await waitForCaptureSettled();
+            const shouldPersistSnapshot =
+              !!sessionPhotoRef.current &&
+              !hasSavedVisitorRef.current &&
+              !hasPersistedSecuritySnapshotRef.current;
+            if (shouldPersistSnapshot) {
+              await persistSecuritySnapshotIfNeeded(finalSessionId);
+            }
+            await DatabaseManager.endSession(finalSessionId, {
+              status: "disconnected",
+              summary: "Live connection closed before explicit end_interaction.",
+            });
+            captureInFlightRef.current = false;
+            hasSavedVisitorRef.current = false;
+            hasPersistedSecuritySnapshotRef.current = false;
+            sessionPhotoRef.current = null;
+            visitorCheckInPhotoRef.current = null;
+          })();
+        }, 12000);
+      } else {
+        visitorFlowRef.current = createVisitorFlowSession();
+        if (endSessionResetTimerRef.current) {
+          clearTimeout(endSessionResetTimerRef.current);
+          endSessionResetTimerRef.current = null;
+        }
+        setConversationState({ collectedSlots: {} });
+        lastLoggedAssistantTextRef.current = "";
+        stopCameraPreview();
       }
     }
 
@@ -927,6 +960,9 @@ function ReceptionistApp() {
         setExpressionCue("listening_attentive");
       }, 1800);
     } else {
+      if (isAwaitingReconnectRef.current) {
+        return;
+      }
       hasSentAutoGreetingRef.current = false;
       gestureQueueRef.current = [];
       gestureBusyUntilRef.current = 0;
