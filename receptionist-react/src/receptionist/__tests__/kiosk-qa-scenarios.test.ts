@@ -13,13 +13,13 @@ import {
 } from "../visitor-flow-machine";
 
 describe("QA Scenario A — new visitor slot order (state machine)", () => {
-  test("name → phone → coming from → company → person → photo", () => {
+  test("phone → name → coming from → company → person → photo", () => {
     let s = createVisitorFlowSession();
     s = { ...s, mode: "new_visitor" };
-    s = transitionVisitorFlow(s, "ASK_NAME");
-    expect(expectedSlotForState("ASK_NAME")).toBe("visitor_name");
     s = transitionVisitorFlow(s, "ASK_PHONE");
     expect(expectedSlotForState("ASK_PHONE")).toBe("phone");
+    s = transitionVisitorFlow(s, "ASK_NAME");
+    expect(expectedSlotForState("ASK_NAME")).toBe("visitor_name");
     s = transitionVisitorFlow(s, "ASK_COMING_FROM");
     expect(expectedSlotForState("ASK_COMING_FROM")).toBe("came_from");
     s = transitionVisitorFlow(s, "ASK_COMPANY");

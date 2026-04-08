@@ -22,7 +22,7 @@ export const TOOLS: Tool[] = [
             {
                 name: "collect_slot_value",
                 description:
-                    "Call every time the user provides a slot value. Record one field per call. Visitor flow slots: visitor_name, phone, came_from, visit_company. Delivery slots: visitor_name, delivery_company, recipient_company, recipient_name. After a valid 10-digit visitor phone, the next required slot is always visitor_name. If the user gave multiple values in one utterance, call this tool once per value (prefer same turn).",
+                    "Call every time the user provides a slot value. Record one field per call. Visitor flow order: phone, then visitor_name, then came_from, then visit_company, then optional meeting_with. Delivery slots: visitor_name, delivery_company, recipient_company, recipient_name. Obey KIOSK_STATE_JSON next_required_slot when it disagrees with your guess. If the user gave multiple values in one utterance, call this tool once per slot (same turn when possible).",
                 parameters: {
                     type: "OBJECT",
                     properties: {
@@ -31,7 +31,11 @@ export const TOOLS: Tool[] = [
                             description:
                                 "visitor_name | phone | came_from | visit_company | delivery_company | recipient_company | recipient_name"
                         },
-                        value: { type: "STRING", description: "The value provided by the visitor" }
+                        value: {
+                            type: "STRING",
+                            description:
+                                "Use the visitor's exact words for names, company, and place (no paraphrasing). For phone, use the digits as spoken or written.",
+                        }
                     },
                     required: ["slot_name", "value"]
                 } as any
@@ -101,7 +105,8 @@ export const TOOLS: Tool[] = [
             },
             {
                 name: "capture_photo",
-                description: "After collecting required details for the active flow, ask the visitor to stand still for 5 seconds and then capture a JPG photo.",
+                description:
+                    "After collecting required details for the active flow, ask the visitor to look at the camera, then call this tool. Wait for the tool response: only if status is success may you say the photo was taken. If status is error, ask the visitor to allow camera permission and call capture_photo again.",
                 parameters: {
                     type: "OBJECT",
                     properties: {},

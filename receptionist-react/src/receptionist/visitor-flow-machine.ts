@@ -53,11 +53,12 @@ export type VisitorFlowSession = {
 };
 
 const ALLOWED: Record<VisitorFlowState, VisitorFlowState[]> = {
-  IDLE: ["MODE_SELECTED", "ASK_NAME", "DELIVERY_ASK_NAME", "ERROR"],
-  MODE_SELECTED: ["ASK_NAME", "DELIVERY_ASK_NAME", "ERROR"],
+  IDLE: ["MODE_SELECTED", "ASK_PHONE", "DELIVERY_ASK_NAME", "ERROR"],
+  MODE_SELECTED: ["ASK_PHONE", "DELIVERY_ASK_NAME", "ERROR"],
   // CAPTURE_PHOTO: allow jump when mandatory slots are already complete (tool gates via getMissingFieldsBeforePhoto).
-  ASK_NAME: ["ASK_PHONE", "CAPTURE_PHOTO", "ERROR"],
-  ASK_PHONE: ["ASK_COMING_FROM", "CAPTURE_PHOTO", "ERROR"],
+  // Visitor check-in order: phone → name → coming from → company → optional person → photo.
+  ASK_PHONE: ["ASK_NAME", "CAPTURE_PHOTO", "ERROR"],
+  ASK_NAME: ["ASK_COMING_FROM", "CAPTURE_PHOTO", "ERROR"],
   ASK_COMING_FROM: ["ASK_COMPANY", "CAPTURE_PHOTO", "ERROR"],
   ASK_COMPANY: ["ASK_PERSON", "CAPTURE_PHOTO", "ERROR"],
   ASK_PERSON: ["CAPTURE_PHOTO", "ERROR"],
@@ -75,7 +76,7 @@ const ALLOWED: Record<VisitorFlowState, VisitorFlowState[]> = {
   CREATE_VISITOR_LOG: ["SEND_NOTIFICATION", "ERROR"],
   SEND_NOTIFICATION: ["COMPLETED", "ERROR"],
   COMPLETED: [],
-  ERROR: ["ASK_NAME", "DELIVERY_ASK_NAME"],
+  ERROR: ["ASK_PHONE", "DELIVERY_ASK_NAME"],
 };
 
 export function createVisitorFlowSession(): VisitorFlowSession {

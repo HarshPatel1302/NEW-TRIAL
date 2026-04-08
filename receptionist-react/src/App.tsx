@@ -877,7 +877,7 @@ function ReceptionistApp() {
         visitorFlowRef.current = createVisitorFlowSession();
         resetSessionPlaybackEpoch();
         lastRuntimeStateLineRef.current = "";
-        void setVisitorFlowState("ASK_NAME", "session_connected");
+        void setVisitorFlowState("ASK_PHONE", "session_connected");
         setConversationState({ collectedSlots: {} });
         window.setTimeout(() => {
           pushKioskRuntimeStateJson(
@@ -1141,6 +1141,10 @@ function ReceptionistApp() {
     const onToolCall = async (toolCall: any) => {
       console.log("Tool Call:", toolCall);
       const responses = [];
+      /** Keeps slot reads correct when multiple collect_slot_value calls arrive in one tool batch (ref lags setState). */
+      let collectedSlotsScratch: Record<string, string> = {
+        ...conversationStateRef.current.collectedSlots,
+      };
 
       for (const fc of toolCall.functionCalls) {
         let result: any = { error: "Unknown tool" };
@@ -1188,7 +1192,7 @@ function ReceptionistApp() {
                 mode: "new_visitor",
               };
               if (visitorFlowRef.current.state === "IDLE" || visitorFlowRef.current.state === "MODE_SELECTED") {
-                void setVisitorFlowState("ASK_NAME", "intent_non_delivery_selected");
+                void setVisitorFlowState("ASK_PHONE", "intent_non_delivery_selected");
               }
             }
 
@@ -1224,7 +1228,11 @@ function ReceptionistApp() {
                   "This field is not required. Collect only the active flow details before photo capture.",
               };
             } else {
-            if (expectedSlot && slotName !== expectedSlot) {
+            const flexNewVisitorSlot =
+              visitorFlowRef.current.mode !== "delivery" &&
+              ((visitorFlowRef.current.state === "ASK_NAME" && slotName === "phone") ||
+                (visitorFlowRef.current.state === "ASK_PHONE" && slotName === "visitor_name"));
+            if (expectedSlot && slotName !== expectedSlot && !flexNewVisitorSlot) {
               result = {
                 status: "need_more_info",
                 slot: slotName,
@@ -1240,7 +1248,7 @@ function ReceptionistApp() {
             }
             const isDeliverySlotName = ["delivery_company", "recipient_company", "recipient_name"].includes(slotName);
             const rawSlotValue = String(args.value || "").trim();
-            const existingSlotValue = String(conversationStateRef.current.collectedSlots[slotName] || "").trim();
+            const existingSlotValue = String(collectedSlotsScratch[slotName] || "").trim();
             const slotValue = mergeCollectedSlotValue(slotName, rawSlotValue, existingSlotValue);
             const phoneDigitsCollected = slotName === "phone" ? toPhoneDigits(slotValue).length : 0;
             const phoneNeedsMoreDigits = slotName === "phone" && phoneDigitsCollected > 0 && phoneDigitsCollected < 10;
@@ -1265,9 +1273,17 @@ function ReceptionistApp() {
                 visitorId: null,
                 visitorCreated: false,
               };
-              void setVisitorFlowState("ASK_COMING_FROM", "phone_captured_ask_coming_from");
-              console.info("[VisitorFlow] phone captured; next step coming from", {
+              const nameAlready =
+                hasMeaningfulValue(visitorFlowRef.current.visitorName) ||
+                hasMeaningfulValue(collectedSlotsScratch.visitor_name) ||
+                hasMeaningfulValue(collectedSlotsScratch.name);
+              void setVisitorFlowState(
+                nameAlready ? "ASK_COMING_FROM" : "ASK_NAME",
+                nameAlready ? "phone_captured_have_name" : "phone_captured_ask_name"
+              );
+              console.info("[VisitorFlow] phone captured", {
                 phone: normalizedPhoneValue,
+                next: nameAlready ? "ASK_COMING_FROM" : "ASK_NAME",
               });
             } else if (slotName === "phone" && !phoneInvalid && !phoneNeedsMoreDigits) {
               visitorFlowRef.current = {
@@ -1285,9 +1301,24 @@ function ReceptionistApp() {
             const matchedPurpose = shouldResolvePurposeCategory
               ? findPurposeCategoryMatch(slotValue)
               : null;
+            if (slotName === "visitor_name" && visitorFlowRef.current.state === "ASK_PHONE") {
+              visitorFlowRef.current = { ...visitorFlowRef.current, visitorName: slotValue };
+            }
             if (slotName === "visitor_name" && visitorFlowRef.current.state === "ASK_NAME") {
               visitorFlowRef.current = { ...visitorFlowRef.current, visitorName: slotValue };
-              void setVisitorFlowState("ASK_PHONE", "captured_new_visitor_name");
+              const phoneDigitsNow = toPhoneDigits(
+                collectedSlotsScratch.phone ||
+                  visitorFlowRef.current.normalizedPhoneNumber ||
+                  visitorFlowRef.current.phoneNumber ||
+                  ""
+              );
+              const phoneOk =
+                phoneDigitsNow.length >= 10 &&
+                isValidIndianMobile(normalizeIndianMobile(phoneDigitsNow));
+              void setVisitorFlowState(
+                phoneOk ? "ASK_COMING_FROM" : "ASK_PHONE",
+                phoneOk ? "name_captured_have_phone" : "captured_new_visitor_name_need_phone"
+              );
             }
             if (slotName === "visitor_name" && visitorFlowRef.current.state === "DELIVERY_ASK_NAME") {
               visitorFlowRef.current = { ...visitorFlowRef.current, deliveryPersonName: slotValue };
@@ -1324,19 +1355,23 @@ function ReceptionistApp() {
               "meeting_with",
               "recipient_name",
             ].includes(slotName);
+            const slotCtxForLookup = {
+              ...conversationStateRef.current.collectedSlots,
+              ...collectedSlotsScratch,
+            };
             const memberLookupQueryContext =
-              conversationStateRef.current.collectedSlots.recipient_company ||
-              conversationStateRef.current.collectedSlots.visit_company ||
-              conversationStateRef.current.collectedSlots.target_company ||
-              conversationStateRef.current.collectedSlots.came_from ||
-              conversationStateRef.current.collectedSlots.company ||
+              slotCtxForLookup.recipient_company ||
+              slotCtxForLookup.visit_company ||
+              slotCtxForLookup.target_company ||
+              slotCtxForLookup.came_from ||
+              slotCtxForLookup.company ||
               "";
             const tMemberLookup = Date.now();
             let memberLookup: MemberLookupResult | null = null;
             if (shouldResolveMemberDestination && hasMeaningfulValue(slotValue)) {
               const phoneForBatch =
                 visitorFlowRef.current.normalizedPhoneNumber ||
-                normalizeIndianMobile(String(conversationStateRef.current.collectedSlots.phone || ""));
+                normalizeIndianMobile(String(slotCtxForLookup.phone || ""));
               if (isKioskGateProxyEnabled() && isValidIndianMobile(phoneForBatch)) {
                 const batch = await kioskBatchLookup({
                   phone: phoneForBatch,
@@ -1417,10 +1452,8 @@ function ReceptionistApp() {
               memberLookup.ok &&
               matchedMemberIds.length > 1;
 
-            setConversationState(prev => ({
-              ...prev,
-              ...(isDeliverySlotName ? { intent: "delivery" } : {}),
-              collectedSlots: {
+            setConversationState(prev => {
+              const collectedSlots = {
                 ...prev.collectedSlots,
                 [slotName]: slotValue,
                 ...(shouldClearMemberLookupState
@@ -1453,8 +1486,14 @@ function ReceptionistApp() {
                       member_objects_uri: encodedMatchedMembers,
                     }
                   : {}),
-              }
-            }));
+              };
+              collectedSlotsScratch = collectedSlots;
+              return {
+                ...prev,
+                ...(isDeliverySlotName ? { intent: "delivery" } : {}),
+                collectedSlots,
+              };
+            });
 
             if (matchedPurpose) {
               console.log("ok", matchedPurpose.category.category_id);
@@ -2433,40 +2472,43 @@ function ReceptionistApp() {
                 }
               }
               const photoPlan = getPhotoCountdownPlan();
-              // Respond immediately so the Live API does not wait on camera I/O.
-              result = {
-                status: "success",
-                message: `Photo capture started. The photo will be ready in ${photoPlan.label}. Proceed with the next step.`,
-                format: "image/jpeg",
-              };
-
-              void (async () => {
-                const epochAtStart = getPlaybackEpoch();
-                const captured = await captureCheckInPhotoAfterCountdown(
-                  "tool_call_photo_capture",
-                  photoPlan.countdownMs
+              const epochAtStart = getPlaybackEpoch();
+              const captured = await captureCheckInPhotoAfterCountdown(
+                "tool_call_photo_capture",
+                photoPlan.countdownMs
+              );
+              if (getPlaybackEpoch() !== epochAtStart) {
+                result = {
+                  status: "error",
+                  message:
+                    "Photo capture was cancelled because the session state changed. Call capture_photo again when the visitor is ready.",
+                };
+              } else if (!captured) {
+                const detail = lastCaptureErrorRef.current?.trim() || "Camera did not return a usable image.";
+                console.warn("[capture_photo] capture failed:", detail);
+                result = {
+                  status: "error",
+                  message: `${detail} Do not tell the visitor the photo succeeded. Ask them to allow camera access for this site, then call capture_photo again.`,
+                };
+              } else {
+                visitorFlowRef.current = {
+                  ...visitorFlowRef.current,
+                  photoCaptured: true,
+                  photoUploaded: true,
+                };
+                void setVisitorFlowState(
+                  visitorFlowRef.current.mode === "delivery"
+                    ? "DELIVERY_UPLOAD_PHOTO"
+                    : "UPLOAD_PHOTO",
+                  "photo_capture_completed"
                 );
-                if (getPlaybackEpoch() !== epochAtStart) {
-                  console.warn("[capture_photo] discarding stale background capture after session/flow advance");
-                  return;
-                }
-                if (!captured) {
-                  console.warn("[capture_photo] Background capture failed:", lastCaptureErrorRef.current);
-                } else {
-                  visitorFlowRef.current = {
-                    ...visitorFlowRef.current,
-                    photoCaptured: true,
-                    photoUploaded: true,
-                  };
-                  void setVisitorFlowState(
-                    visitorFlowRef.current.mode === "delivery"
-                      ? "DELIVERY_UPLOAD_PHOTO"
-                      : "UPLOAD_PHOTO",
-                    "photo_capture_completed"
-                  );
-                  console.info("[VisitorFlow] photo step entered and completed");
-                }
-              })();
+                console.info("[VisitorFlow] photo capture completed in tool handler");
+                result = {
+                  status: "success",
+                  message: "Photo captured successfully. Call save_visitor_info next.",
+                  format: "image/jpeg",
+                };
+              }
             }
           }
         } catch (e: any) {

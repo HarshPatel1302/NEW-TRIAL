@@ -9,22 +9,23 @@ import {
 } from "../visitor-flow-machine";
 
 describe("visitor flow machine (new visitor + delivery)", () => {
-  test("ASK_NAME → ASK_PHONE; name first then phone slot", () => {
+  test("ASK_PHONE → ASK_NAME; phone first then name slot", () => {
     let session = createVisitorFlowSession();
     session = { ...session, mode: "new_visitor" };
-    session = transitionVisitorFlow(session, "ASK_NAME");
-    expect(session.state).toBe("ASK_NAME");
-    expect(expectedSlotForState("ASK_NAME")).toBe("visitor_name");
     session = transitionVisitorFlow(session, "ASK_PHONE");
     expect(session.state).toBe("ASK_PHONE");
     expect(expectedSlotForState("ASK_PHONE")).toBe("phone");
+    session = transitionVisitorFlow(session, "ASK_NAME");
+    expect(session.state).toBe("ASK_NAME");
+    expect(expectedSlotForState("ASK_NAME")).toBe("visitor_name");
+    expect(promptForState("ASK_PHONE")).toMatch(/phone/i);
     expect(promptForState("ASK_NAME")).toMatch(/name/i);
   });
 
   test("new visitor happy path through optional person to photo", () => {
     let session: VisitorFlowSession = { ...createVisitorFlowSession(), mode: "new_visitor" };
-    session = transitionVisitorFlow(session, "ASK_NAME");
     session = transitionVisitorFlow(session, "ASK_PHONE");
+    session = transitionVisitorFlow(session, "ASK_NAME");
     session = transitionVisitorFlow(session, "ASK_COMING_FROM");
     session = transitionVisitorFlow(session, "ASK_COMPANY");
     session = transitionVisitorFlow(session, "ASK_PERSON");
@@ -36,8 +37,8 @@ describe("visitor flow machine (new visitor + delivery)", () => {
 
   test("new visitor may jump ASK_COMPANY → CAPTURE_PHOTO when skipping optional person at tool layer", () => {
     let session: VisitorFlowSession = { ...createVisitorFlowSession(), mode: "new_visitor" };
-    session = transitionVisitorFlow(session, "ASK_NAME");
     session = transitionVisitorFlow(session, "ASK_PHONE");
+    session = transitionVisitorFlow(session, "ASK_NAME");
     session = transitionVisitorFlow(session, "ASK_COMING_FROM");
     session = transitionVisitorFlow(session, "ASK_COMPANY");
     session = transitionVisitorFlow(session, "CAPTURE_PHOTO");
