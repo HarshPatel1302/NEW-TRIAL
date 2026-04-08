@@ -2,8 +2,10 @@
  * Immediate browser TTS for deterministic lines while Gemini generates.
  * Cancel when model audio arrives (see use-live-api).
  *
- * REACT_APP_KIOSK_LOCAL_SPEECH=1 enables cue lines (off by default — avoids overlapping Gemini Live audio).
- * REACT_APP_DETERMINISTIC_LOCAL_PROMPTS=1 speaks exact slot scripts via synthesis (off by default).
+ * Requires REACT_APP_ENABLE_LEGACY_BROWSER_TTS=1, then:
+ * REACT_APP_KIOSK_LOCAL_SPEECH=1 for cue lines;
+ * REACT_APP_DETERMINISTIC_LOCAL_PROMPTS=1 for scripted slot lines.
+ * Default is Gemini Live only (no browser TTS).
  */
 
 import { deterministicPromptForVisitorState } from "./deterministic-prompts";

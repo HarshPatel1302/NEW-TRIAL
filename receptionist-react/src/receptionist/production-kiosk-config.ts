@@ -19,7 +19,7 @@ export const PRODUCTION_KIOSK_ENV_RECOMMENDED = {
   REACT_APP_PHOTO_CAPTURE_MODE: "stable",
   /** FaceDetector-based readiness before shutter (set 0 to disable on unsupported hardware). */
   REACT_APP_PHOTO_FACE_DETECT: "1",
-  /** If no model audio within this ms after user mic activity, speak deterministic next step. */
+  /** Legacy env: local SLA → browser TTS was removed (single Gemini Live voice). */
   REACT_APP_MODEL_SLA_MS: "5200",
   /** Noisy lobby tuning (0–0.35). Rising edge = barge when prev ≤ floor and current > rise. */
   REACT_APP_BARGE_IN_VOLUME_RISE: "0.045",

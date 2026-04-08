@@ -20,6 +20,9 @@ const UNKNOWN_PERSON_PHRASES = [
   "skip",
   "anyone",
   "someone",
+  "nobody",
+  "no one",
+  "noone",
 ];
 
 export function isExplicitUnknownPerson(value: unknown): boolean {

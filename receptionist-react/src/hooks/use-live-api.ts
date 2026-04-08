@@ -29,7 +29,6 @@ import { audioContext } from "../lib/utils";
 import VolMeterWorket from "../lib/worklets/vol-meter";
 import LipSyncAnalyserWorklet from "../lib/worklets/lip-sync-analyser";
 import { LiveConnectConfig } from "@google/genai";
-import { defaultDeterministicLocalPromptsEnabled } from "../receptionist/kiosk-runtime-defaults";
 import { recordBargeInCompleted, recordBargeWhenAssistantSilent } from "../receptionist/kiosk-barge-metrics";
 
 export type UseLiveAPIResults = {
@@ -49,10 +48,8 @@ export type UseLiveAPIResults = {
   bargeInAssistant: () => void;
   /** Ref mirrors playback start/stop without waiting for React render (barge-in / VAD). */
   assistantAudioPlayingRef: MutableRefObject<boolean>;
-  /** Mic chunk: arms SLA timer; clears when model audio plays. */
+  /** Mic activity hook (reserved; browser TTS fallback removed so only Gemini Live speaks). */
   notifyUserMicActivity: () => void;
-  /** If model is slow after user spoke, kiosk can speak deterministic next step. */
-  registerSlaFallbackHandler: (handler: (() => void) | null) => void;
   /** Client-side barge-in with optional perf timing (volume edge → interrupt complete). */
   bargeInAssistantFromUser: (ctx?: { in_volume: number; prev_volume: number; t0: number }) => void;
 };
@@ -72,8 +69,6 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
   const assistantAudioPlayingRef = useRef(false);
 
   const lastBargeInAtRef = useRef(0);
-  const slaTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const slaHandlerRef = useRef<(() => void) | null>(null);
   const intentionalDisconnectRef = useRef(false);
   const reconnectAttemptsRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -182,10 +177,6 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
       setConnected(false);
       setAssistantAudioPlaying(false);
       assistantAudioPlayingRef.current = false;
-      if (slaTimerRef.current) {
-        clearTimeout(slaTimerRef.current);
-        slaTimerRef.current = null;
-      }
 
       if (!intentionalDisconnectRef.current && hasEverConnectedRef.current) {
         attemptReconnect();
@@ -209,10 +200,6 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
 
     const onAudio = (data: ArrayBuffer) => {
       cancelKioskLocalSpeech();
-      if (slaTimerRef.current) {
-        clearTimeout(slaTimerRef.current);
-        slaTimerRef.current = null;
-      }
       if (!acceptAssistantPcmChunk()) {
         return;
       }
@@ -278,10 +265,6 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
     setConnected(false);
     setAssistantAudioPlaying(false);
     assistantAudioPlayingRef.current = false;
-    if (slaTimerRef.current) {
-      clearTimeout(slaTimerRef.current);
-      slaTimerRef.current = null;
-    }
   }, [setConnected, client]);
 
   const runBargeInCore = useCallback(() => {
@@ -290,10 +273,6 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
       return;
     }
     lastBargeInAtRef.current = now;
-    if (slaTimerRef.current) {
-      clearTimeout(slaTimerRef.current);
-      slaTimerRef.current = null;
-    }
     bumpPlaybackEpoch("user_barge_in");
     cancelKioskLocalSpeech();
     invalidateAssistantUtteranceAnchor("user_barge_in");
@@ -323,30 +302,8 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
     [runBargeInCore]
   );
 
-  const registerSlaFallbackHandler = useCallback((handler: (() => void) | null) => {
-    slaHandlerRef.current = handler;
-  }, []);
-
   const notifyUserMicActivity = useCallback(() => {
-    if (!defaultDeterministicLocalPromptsEnabled()) return;
-    if (slaTimerRef.current) {
-      clearTimeout(slaTimerRef.current);
-      slaTimerRef.current = null;
-    }
-    const raw = Number(process.env.REACT_APP_MODEL_SLA_MS);
-    const slaMs = Number.isFinite(raw) ? Math.max(2800, Math.min(12000, raw)) : 5200;
-    slaTimerRef.current = setTimeout(() => {
-      slaTimerRef.current = null;
-      if (assistantAudioPlayingRef.current) return;
-      const fn = slaHandlerRef.current;
-      if (fn) {
-        try {
-          fn();
-        } catch (e) {
-          console.warn("[useLiveAPI] SLA fallback failed", e);
-        }
-      }
-    }, slaMs);
+    // Intentionally no-op: deterministic browser speechSynthesis duplicated the receptionist (Gemini Live) voice.
   }, []);
 
   return {
@@ -364,7 +321,6 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
     bargeInAssistant,
     assistantAudioPlayingRef,
     notifyUserMicActivity,
-    registerSlaFallbackHandler,
     bargeInAssistantFromUser,
   };
 }

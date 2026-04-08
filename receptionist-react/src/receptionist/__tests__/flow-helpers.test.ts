@@ -8,6 +8,8 @@ describe("flow-helpers", () => {
   test("isExplicitUnknownPerson recognizes common phrases", () => {
     expect(isExplicitUnknownPerson("I don't know")).toBe(true);
     expect(isExplicitUnknownPerson("not sure")).toBe(true);
+    expect(isExplicitUnknownPerson("nobody")).toBe(true);
+    expect(isExplicitUnknownPerson("no one")).toBe(true);
     expect(isExplicitUnknownPerson("Jane Doe")).toBe(false);
   });
 

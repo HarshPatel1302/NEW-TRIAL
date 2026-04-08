@@ -27,10 +27,6 @@ import { isKioskGateProxyEnabled, kioskBackendWarmup, kioskBatchLookup } from ".
 import { pushKioskRuntimeStateJson } from "./receptionist/kiosk-runtime-push";
 import { DETERMINISTIC_PROMPTS } from "./receptionist/deterministic-prompts";
 import {
-  isDeterministicLocalPromptsEnabled,
-  speakDeterministicVisitorFlowCue,
-} from "./receptionist/local-cue-speech";
-import {
   bumpPlaybackEpoch,
   getPlaybackEpoch,
   acceptAssistantModelText,
@@ -54,6 +50,10 @@ import {
 } from "./receptionist/member-directory";
 import { waitForFaceCaptureReadiness } from "./receptionist/face-capture-readiness";
 import { defaultCompactSystemEnabled } from "./receptionist/kiosk-runtime-defaults";
+import {
+  getKioskToolPhotoCountdownMs,
+  getPhotoFaceMaxWaitMs,
+} from "./receptionist/photo-kiosk-config";
 import { perfEndTurn, perfLog, perfMark, perfSetAssumedSilenceMs } from "./receptionist/perf-latency";
 import { perfRecordScenario } from "./receptionist/perf-summary";
 import purposeCatalog from "./receptionist/purpose.json";
@@ -132,18 +132,6 @@ function toPhoneDigits(value: unknown) {
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/** Photo path: stable = frame-ready only; countdown = env delay; instant = minimal wait. */
-function getPhotoCountdownPlan(): { countdownMs: number; label: string } {
-  const mode = String(process.env.REACT_APP_PHOTO_CAPTURE_MODE || "stable").toLowerCase();
-  const raw = Number(process.env.REACT_APP_PHOTO_COUNTDOWN_MS);
-  const defaultCountdown = 1200;
-  if (mode === "countdown") {
-    const ms = Number.isFinite(raw) ? Math.max(0, Math.min(8000, raw)) : defaultCountdown;
-    return { countdownMs: ms, label: `${Math.round(ms / 1000)}s` };
-  }
-  return { countdownMs: 0, label: "a moment" };
 }
 
 /** Wait until video dimensions are stable (reduces blank-frame capture after countdown). */
@@ -405,7 +393,6 @@ function ReceptionistApp() {
     disconnect: disconnectSession,
     lipSyncRef,
     assistantAudioPlaying,
-    registerSlaFallbackHandler,
   } = useLiveAPIContext();
 
   // ── Gesture Controller ────────────────────────────────────────────
@@ -684,7 +671,7 @@ function ReceptionistApp() {
       }
       const video = videoRef.current;
       const faceEnabled = String(process.env.REACT_APP_PHOTO_FACE_DETECT || "1") !== "0";
-      const faceWaitMs = Math.min(5200, countdownMs + 3800);
+      const faceWaitMs = getPhotoFaceMaxWaitMs(countdownMs);
       if (video && stream && faceEnabled) {
         try {
           video.srcObject = stream;
@@ -804,7 +791,7 @@ function ReceptionistApp() {
   useEffect(() => {
     const modelId = "models/gemini-2.5-flash-native-audio-preview-12-2025";
     setModel(modelId);
-    const vadSilenceMs = 280;
+    const vadSilenceMs = 220;
     perfSetAssumedSilenceMs(vadSilenceMs);
     const baseSystem = defaultCompactSystemEnabled()
       ? RECEPTIONIST_COMPACT_SYSTEM
@@ -812,7 +799,7 @@ function ReceptionistApp() {
 
     setConfig({
       responseModalities: [Modality.AUDIO],
-      temperature: 0.65,
+      temperature: 0.55,
       topP: 0.85,
       speechConfig: {
         voiceConfig: {
@@ -835,14 +822,6 @@ function ReceptionistApp() {
       tools: TOOLS,
     });
   }, [setConfig, setModel]);
-
-  useEffect(() => {
-    registerSlaFallbackHandler(() => {
-      if (!isDeterministicLocalPromptsEnabled()) return;
-      speakDeterministicVisitorFlowCue(visitorFlowRef.current);
-    });
-    return () => registerSlaFallbackHandler(null);
-  }, [registerSlaFallbackHandler]);
 
   // Best-effort landscape lock for kiosk devices that allow it.
   useEffect(() => {
@@ -887,7 +866,7 @@ function ReceptionistApp() {
             getPlaybackEpoch(),
             lastRuntimeStateLineRef
           );
-        }, 600);
+        }, 320);
         hasSavedVisitorRef.current = false;
         hasPersistedSecuritySnapshotRef.current = false;
         sessionPhotoRef.current = null;
@@ -1228,6 +1207,47 @@ function ReceptionistApp() {
                   "This field is not required. Collect only the active flow details before photo capture.",
               };
             } else {
+            const rawSlotValueEarly = String(args.value || "").trim();
+            if (
+              slotName === "meeting_with" &&
+              visitorFlowRef.current.mode === "new_visitor" &&
+              visitorFlowRef.current.state === "ASK_PERSON" &&
+              isExplicitUnknownPerson(rawSlotValueEarly)
+            ) {
+              visitorFlowRef.current = {
+                ...visitorFlowRef.current,
+                personToMeet: undefined,
+              };
+              void setVisitorFlowState("CAPTURE_PHOTO", "visitor_optional_person_unknown");
+              setConversationState((prev) => ({
+                ...prev,
+                collectedSlots: {
+                  ...prev.collectedSlots,
+                  meeting_with: "",
+                },
+              }));
+              collectedSlotsScratch = {
+                ...collectedSlotsScratch,
+                meeting_with: "",
+              };
+              result = {
+                status: "success",
+                slot: slotName,
+                value: "",
+                next_prompt: promptForState(
+                  visitorFlowRef.current.state,
+                  visitorFlowRef.current.visitorName
+                ),
+                message:
+                  "Optional person not specified. Proceed to capture_photo when the visitor is ready.",
+              };
+              responses.push({
+                name: name,
+                id: fc.id,
+                response: { result },
+              });
+              continue;
+            }
             const flexNewVisitorSlot =
               visitorFlowRef.current.mode !== "delivery" &&
               ((visitorFlowRef.current.state === "ASK_NAME" && slotName === "phone") ||
@@ -1273,17 +1293,11 @@ function ReceptionistApp() {
                 visitorId: null,
                 visitorCreated: false,
               };
-              const nameAlready =
-                hasMeaningfulValue(visitorFlowRef.current.visitorName) ||
-                hasMeaningfulValue(collectedSlotsScratch.visitor_name) ||
-                hasMeaningfulValue(collectedSlotsScratch.name);
-              void setVisitorFlowState(
-                nameAlready ? "ASK_COMING_FROM" : "ASK_NAME",
-                nameAlready ? "phone_captured_have_name" : "phone_captured_ask_name"
-              );
+              // Product order: phone → name → coming_from → company → optional person → photo.
+              void setVisitorFlowState("ASK_NAME", "phone_captured_ask_name");
               console.info("[VisitorFlow] phone captured", {
                 phone: normalizedPhoneValue,
-                next: nameAlready ? "ASK_COMING_FROM" : "ASK_NAME",
+                next: "ASK_NAME",
               });
             } else if (slotName === "phone" && !phoneInvalid && !phoneNeedsMoreDigits) {
               visitorFlowRef.current = {
@@ -1452,6 +1466,8 @@ function ReceptionistApp() {
               memberLookup.ok &&
               matchedMemberIds.length > 1;
 
+            /* Batch tool calls: sync collectedSlotsScratch for the next fc in this loop; prev => updater is required for React merge. */
+            // eslint-disable-next-line no-loop-func -- intentional: scratch must update synchronously between batched collect_slot_value calls
             setConversationState(prev => {
               const collectedSlots = {
                 ...prev.collectedSlots,
@@ -1919,7 +1935,7 @@ function ReceptionistApp() {
                   message:
                     isDeliveryIntent
                       ? "Collect delivery person name, delivery company, recipient company, and recipient name before saving."
-                      : "Collect name, phone, where you are coming from, and company to visit before saving.",
+                      : "Collect phone, name, where you are coming from, and company to visit before saving.",
                 };
               } else if (!visitorCheckInPhotoRef.current) {
                 result = {
@@ -2032,7 +2048,9 @@ function ReceptionistApp() {
                   const externalSync = await syncWalkInDetailsToExternalApis({
                     name: resolvedName,
                     phone: normalizedPhone,
-                    cameFrom: resolvedCameFrom,
+                    cameFrom: isDeliveryIntent
+                      ? String(resolvedDeliveryCompany || resolvedCameFrom || "Delivery").trim()
+                      : resolvedCameFrom,
                     meetingWith: finalMeetingWith,
                     localVisitorId: localVisitorId || undefined,
                     intent: resolvedIntent,
@@ -2047,9 +2065,10 @@ function ReceptionistApp() {
                     companyId: Number.isFinite(configuredCompanyId) && configuredCompanyId > 0
                       ? configuredCompanyId
                       : undefined,
+                    // Visitor log company_name is the Cyber One company being visited / receiving the parcel (not the courier).
                     companyName: isDeliveryIntent
-                      ? (resolvedDeliveryCompany || finalCompany)
-                      : (resolvedVisitCompany || finalCompany),
+                      ? String(resolvedRecipientCompany || finalCompany).trim()
+                      : String(resolvedVisitCompany || finalCompany).trim(),
                     isStaff: false,
                   });
                   const addVisitorResult = externalSync.results.find((r) => r.field === "add_visitor_entry");
@@ -2452,7 +2471,7 @@ function ReceptionistApp() {
                 message:
                   photoReadiness.flow === "delivery"
                     ? "Collect delivery person name, delivery company, recipient company, and recipient name before photo capture."
-                    : "Collect name, phone, where they came from, and company in Cyber One before photo capture.",
+                    : "Collect phone, name, where they came from, and company in Cyber One before photo capture.",
               };
             } else {
               const captureState =
@@ -2471,26 +2490,13 @@ function ReceptionistApp() {
                   continue;
                 }
               }
-              const photoPlan = getPhotoCountdownPlan();
-              const epochAtStart = getPlaybackEpoch();
+              const countdownMs = getKioskToolPhotoCountdownMs();
               const captured = await captureCheckInPhotoAfterCountdown(
                 "tool_call_photo_capture",
-                photoPlan.countdownMs
+                countdownMs
               );
-              if (getPlaybackEpoch() !== epochAtStart) {
-                result = {
-                  status: "error",
-                  message:
-                    "Photo capture was cancelled because the session state changed. Call capture_photo again when the visitor is ready.",
-                };
-              } else if (!captured) {
-                const detail = lastCaptureErrorRef.current?.trim() || "Camera did not return a usable image.";
-                console.warn("[capture_photo] capture failed:", detail);
-                result = {
-                  status: "error",
-                  message: `${detail} Do not tell the visitor the photo succeeded. Ask them to allow camera access for this site, then call capture_photo again.`,
-                };
-              } else {
+              const jpegReady = Boolean(visitorCheckInPhotoRef.current);
+              if (captured && jpegReady) {
                 visitorFlowRef.current = {
                   ...visitorFlowRef.current,
                   photoCaptured: true,
@@ -2507,6 +2513,13 @@ function ReceptionistApp() {
                   status: "success",
                   message: "Photo captured successfully. Call save_visitor_info next.",
                   format: "image/jpeg",
+                };
+              } else {
+                const detail = lastCaptureErrorRef.current?.trim() || "Camera did not return a usable image.";
+                console.warn("[capture_photo] capture failed:", detail, { captured, jpegReady });
+                result = {
+                  status: "error",
+                  message: `${detail} Do not tell the visitor the photo succeeded. Ask them to allow camera access for this site, then call capture_photo again.`,
                 };
               }
             }

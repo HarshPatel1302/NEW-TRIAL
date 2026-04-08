@@ -34,13 +34,25 @@ export function defaultCompactSystemEnabled(): boolean {
   return !envIsExplicitOff("REACT_APP_COMPACT_SYSTEM");
 }
 
-/** Opt-in only — browser speechSynthesis must not duplicate Gemini Live audio by default. */
+/**
+ * Master switch for any browser speechSynthesis path. Kiosk product uses Gemini Live only unless
+ * this is explicitly enabled (prevents accidental double-voice from REACT_APP_KIOSK_LOCAL_SPEECH alone).
+ */
+export function legacyBrowserTtsExplicitlyEnabled(): boolean {
+  return parseEnvBoolTruthy(
+    (process.env as Record<string, string | undefined>).REACT_APP_ENABLE_LEGACY_BROWSER_TTS
+  );
+}
+
+/** Opt-in only — requires REACT_APP_ENABLE_LEGACY_BROWSER_TTS=1 plus REACT_APP_KIOSK_LOCAL_SPEECH=1. */
 export function defaultLocalSpeechEnabled(): boolean {
+  if (!legacyBrowserTtsExplicitlyEnabled()) return false;
   return parseEnvBoolTruthy(process.env.REACT_APP_KIOSK_LOCAL_SPEECH);
 }
 
-/** Opt-in only — deterministic slot lines must not overlap the receptionist voice by default. */
+/** Opt-in only — requires legacy master plus REACT_APP_DETERMINISTIC_LOCAL_PROMPTS=1. */
 export function defaultDeterministicLocalPromptsEnabled(): boolean {
+  if (!legacyBrowserTtsExplicitlyEnabled()) return false;
   return parseEnvBoolTruthy(process.env.REACT_APP_DETERMINISTIC_LOCAL_PROMPTS);
 }
 

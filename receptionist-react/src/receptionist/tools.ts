@@ -22,7 +22,7 @@ export const TOOLS: Tool[] = [
             {
                 name: "collect_slot_value",
                 description:
-                    "Call every time the user provides a slot value. Record one field per call. Visitor flow order: phone, then visitor_name, then came_from, then visit_company, then optional meeting_with. Delivery slots: visitor_name, delivery_company, recipient_company, recipient_name. Obey KIOSK_STATE_JSON next_required_slot when it disagrees with your guess. If the user gave multiple values in one utterance, call this tool once per slot (same turn when possible).",
+                    "Call every time the user provides a slot value. Record one field per call. Visitor flow order: phone, then visitor_name, then came_from, then visit_company, then optional meeting_with (if unknown, call meeting_with with a short phrase like \"don't know\" — do not ask yes/no). Delivery: visitor_name, delivery_company, recipient_company, recipient_name. Obey KIOSK_STATE_JSON next_required_slot when it disagrees with your guess. If the user gave multiple values in one utterance, call this tool once per slot (same turn when possible).",
                 parameters: {
                     type: "OBJECT",
                     properties: {
@@ -106,7 +106,7 @@ export const TOOLS: Tool[] = [
             {
                 name: "capture_photo",
                 description:
-                    "After collecting required details for the active flow, ask the visitor to look at the camera, then call this tool. Wait for the tool response: only if status is success may you say the photo was taken. If status is error, ask the visitor to allow camera permission and call capture_photo again.",
+                    "After all required details for the flow are collected, say in your receptionist voice exactly: \"Please wait 5 seconds while I capture your photo.\" Then call this tool immediately (same turn when possible). The kiosk opens the camera, waits, and saves a JPEG. Only if this tool returns status success may you say the photo was taken. If status is error, ask the visitor to allow camera permission and call capture_photo again. Do not use browser text-to-speech.",
                 parameters: {
                     type: "OBJECT",
                     properties: {},

@@ -1,19 +1,21 @@
 import type { VisitorFlowState } from "./visitor-flow-machine";
+import { KIOSK_PHOTO_VOICE_LINE } from "./photo-kiosk-config";
 
-/** Exact kiosk copy for known steps (Gemini should not rephrase these when local speech is enabled). */
+/** Exact kiosk copy for known steps (Gemini Live voice; no browser TTS). */
 export const DETERMINISTIC_PROMPTS = {
   askPhone: "Please tell me your phone number.",
   askVisitorName: "What is your name?",
   askComingFrom: "Where are you coming from?",
   askVisitCompany:
     "Which company or unit number in Cyber One are you here to visit?",
-  askPersonOptional: "Who are you meeting there, if you know?",
+  /** Optional person — ask once, plainly; do not add “if you don’t know that’s fine” or yes/no prompts. */
+  askPersonOptional: "What is the name of the person from that company?",
   askDeliveryPersonName: "What is your name?",
   askDeliveryCompany: "Which delivery company are you from?",
   askRecipientCompany: "Which company in Cyber One is this parcel for?",
-  askRecipientPerson: "Who is the parcel for?",
-  photoPose:
-    "Please look at the camera and hold still for a moment while I capture your photo.",
+  askRecipientPerson: "What is the name of the person at that company the parcel is for?",
+  /** Spoken by receptionist (Gemini) right before kiosk opens camera + 5s wait. */
+  photoPose: KIOSK_PHOTO_VOICE_LINE,
   lobbyWait:
     "Please have a seat in the lobby while your approval request is being sent.",
 } as const;

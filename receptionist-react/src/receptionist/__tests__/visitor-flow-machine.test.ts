@@ -35,15 +35,13 @@ describe("visitor flow machine (new visitor + delivery)", () => {
     expect(canCapturePhoto(session)).toBe(true);
   });
 
-  test("new visitor may jump ASK_COMPANY → CAPTURE_PHOTO when skipping optional person at tool layer", () => {
+  test("new visitor must pass through ASK_PERSON before photo (optional person step)", () => {
     let session: VisitorFlowSession = { ...createVisitorFlowSession(), mode: "new_visitor" };
     session = transitionVisitorFlow(session, "ASK_PHONE");
     session = transitionVisitorFlow(session, "ASK_NAME");
     session = transitionVisitorFlow(session, "ASK_COMING_FROM");
     session = transitionVisitorFlow(session, "ASK_COMPANY");
-    session = transitionVisitorFlow(session, "CAPTURE_PHOTO");
-    expect(session.state).toBe("CAPTURE_PHOTO");
-    expect(canCapturePhoto(session)).toBe(true);
+    expect(() => transitionVisitorFlow(session, "CAPTURE_PHOTO")).toThrow(/Invalid visitor flow transition/);
   });
 
   test("delivery happy path through photo", () => {
@@ -75,6 +73,19 @@ describe("visitor flow machine (new visitor + delivery)", () => {
     expect(canCreateVisitor({ ...base, photoUploaded: false })).toBe(false);
     expect(canCreateVisitor({ ...base, photoUploaded: true })).toBe(true);
     expect(canCreateVisitor({ ...base, mode: "delivery", photoUploaded: true })).toBe(false);
+  });
+
+  test("photo step prompt is the 5-second receptionist line (Gemini voice, not browser TTS)", () => {
+    const p = promptForState("CAPTURE_PHOTO") || "";
+    expect(p).toContain("5 seconds");
+    expect(p).toContain("capture your photo");
+  });
+
+  test("optional person prompt is a plain question without if-you-know softeners", () => {
+    const p = (promptForState("ASK_PERSON") || "").toLowerCase();
+    expect(p).toContain("person");
+    expect(p).not.toContain("if you know");
+    expect(p).not.toContain("that's okay");
   });
 
   test("deterministic visitor prompts contain no returning / welcome-back wording", () => {
