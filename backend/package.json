@@ -7,6 +7,7 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
+    "test": "jest",
     "verify-api": "bash scripts/verify-api.sh",
     "db:init": "node src/init-db.js",
     "retention:run": "node src/retention.js",
@@ -19,5 +20,9 @@
     "express-rate-limit": "^7.4.1",
     "pg": "^8.13.1",
     "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0",
+    "supertest": "^7.0.0"
   }
 }

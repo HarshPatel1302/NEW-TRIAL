@@ -16,8 +16,10 @@
 
 import {
   createWorketFromSrc,
+  disconnectRegisteredWorkletsFromOutputs,
   registeredWorklets,
 } from "./audioworklet-registry";
+import { perfMark } from "../receptionist/perf-latency";
 
 export interface LipSyncData {
   volume: number;
@@ -33,7 +35,8 @@ export interface LipSyncData {
 
 export class AudioStreamer {
   private sampleRate: number = 24000;
-  private bufferSize: number = 7680;
+  /** ~120ms @ 24kHz — smaller first playable slice for faster perceived reply start. */
+  private bufferSize: number = 2880;
   // A queue of audio buffers to be played. Each buffer is a Float32Array.
   private audioQueue: Float32Array[] = [];
   private isPlaying: boolean = false;
@@ -42,12 +45,13 @@ export class AudioStreamer {
   private checkInterval: number | null = null;
   private scheduledTime: number = 0;
   // Lower startup buffer for snappier assistant responses while preserving stability.
-  private initialBufferTime: number = 0.06;
+  private initialBufferTime: number = 0.045;
   // Web Audio API nodes. source => gain => destination
   public gainNode: GainNode;
   public source: AudioBufferSourceNode;
   private endOfQueueAudioSource: AudioBufferSourceNode | null = null;
   private playbackStarted = false;
+  private readonly activeSources = new Set<AudioBufferSourceNode>();
 
   /** Real-time lip sync frequency data, updated ~60fps by the lip-sync-analyser worklet */
   public lipSyncData: LipSyncData = {
@@ -147,6 +151,7 @@ export class AudioStreamer {
     // Start playing if not already playing.
     if (!this.isPlaying) {
       this.isPlaying = true;
+      perfMark("playback_start");
       this.notifyPlaybackStart();
       // Initialize scheduledTime only when we start playing
       this.scheduledTime = this.context.currentTime + this.initialBufferTime;
@@ -165,7 +170,7 @@ export class AudioStreamer {
   }
 
   private scheduleNextBuffer() {
-    const SCHEDULE_AHEAD_TIME = 0.2;
+    const SCHEDULE_AHEAD_TIME = 0.14;
 
     while (
       this.audioQueue.length > 0 &&
@@ -174,30 +179,35 @@ export class AudioStreamer {
       const audioData = this.audioQueue.shift()!;
       const audioBuffer = this.createAudioBuffer(audioData);
       const source = this.context.createBufferSource();
+      this.activeSources.add(source);
 
-      if (this.audioQueue.length === 0) {
+      const isEndOfQueueChunk = this.audioQueue.length === 0;
+      if (isEndOfQueueChunk) {
         if (this.endOfQueueAudioSource) {
           this.endOfQueueAudioSource.onended = null;
         }
         this.endOfQueueAudioSource = source;
-        source.onended = () => {
-          if (
-            !this.audioQueue.length &&
-            this.endOfQueueAudioSource === source
-          ) {
-            this.endOfQueueAudioSource = null;
-            if (this.isStreamComplete) {
-              this.isPlaying = false;
-              this.notifyPlaybackStop();
-              if (this.checkInterval) {
-                clearInterval(this.checkInterval);
-                this.checkInterval = null;
-              }
-            }
-            this.onComplete();
-          }
-        };
       }
+
+      source.onended = () => {
+        this.activeSources.delete(source);
+        if (
+          isEndOfQueueChunk &&
+          !this.audioQueue.length &&
+          this.endOfQueueAudioSource === source
+        ) {
+          this.endOfQueueAudioSource = null;
+          if (this.isStreamComplete) {
+            this.isPlaying = false;
+            this.notifyPlaybackStop();
+            if (this.checkInterval) {
+              clearInterval(this.checkInterval);
+              this.checkInterval = null;
+            }
+          }
+          this.onComplete();
+        }
+      };
 
       source.buffer = audioBuffer;
       source.connect(this.gainNode);
@@ -245,7 +255,7 @@ export class AudioStreamer {
             if (this.audioQueue.length > 0) {
               this.scheduleNextBuffer();
             }
-          }, 100) as unknown as number;
+          }, 32) as unknown as number;
         }
       }
     } else {
@@ -270,6 +280,17 @@ export class AudioStreamer {
       this.checkInterval = null;
     }
 
+    for (const s of this.activeSources) {
+      try {
+        s.stop(0);
+      } catch {
+        /* already stopped */
+      }
+    }
+    this.activeSources.clear();
+    this.endOfQueueAudioSource = null;
+    disconnectRegisteredWorkletsFromOutputs(this.context);
+
     this.gainNode.gain.linearRampToValueAtTime(
       0,
       this.context.currentTime + 0.1
@@ -280,6 +301,56 @@ export class AudioStreamer {
       this.gainNode = this.context.createGain();
       this.gainNode.connect(this.context.destination);
     }, 200);
+  }
+
+  /**
+   * Hard cut for barge-in: stop scheduled buffers immediately and clear queue.
+   * Does not mark stream complete — further model PCM can play after gate clears.
+   */
+  interruptPlaybackNow() {
+    this.audioQueue = [];
+    this.isStreamComplete = false;
+    if (this.checkInterval) {
+      clearInterval(this.checkInterval);
+      this.checkInterval = null;
+    }
+    for (const s of this.activeSources) {
+      try {
+        s.stop(0);
+      } catch {
+        /* ignore */
+      }
+    }
+    this.activeSources.clear();
+    this.endOfQueueAudioSource = null;
+    this.scheduledTime = this.context.currentTime;
+    this.isPlaying = false;
+    this.notifyPlaybackStop();
+
+    disconnectRegisteredWorkletsFromOutputs(this.context);
+    this.lipSyncData = {
+      volume: 0,
+      lowBand: 0,
+      midBand: 0,
+      highBand: 0,
+      voiced: 0,
+      plosive: 0,
+      sibilance: 0,
+      envelope: 0,
+      timestamp: performance.now(),
+    };
+
+    const t = this.context.currentTime;
+    this.gainNode.gain.cancelScheduledValues(t);
+    this.gainNode.gain.setValueAtTime(0, t);
+
+    window.setTimeout(() => {
+      this.gainNode.disconnect();
+      this.gainNode = this.context.createGain();
+      this.gainNode.connect(this.context.destination);
+      // Worklets are re-linked to destination on the next scheduled buffer (scheduleNextBuffer).
+      this.gainNode.gain.setValueAtTime(1, this.context.currentTime);
+    }, 45);
   }
 
   async resume() {

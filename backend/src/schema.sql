@@ -12,9 +12,12 @@ CREATE TABLE IF NOT EXISTS visitors (
     reference_id TEXT,
     notes TEXT,
     photo TEXT,
+    came_from TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE visitors ADD COLUMN IF NOT EXISTS came_from TEXT NOT NULL DEFAULT '';
 
 DROP INDEX IF EXISTS visitors_normalized_phone_unique;
 CREATE UNIQUE INDEX IF NOT EXISTS visitors_normalized_phone_unique

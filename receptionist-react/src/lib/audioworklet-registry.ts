@@ -28,6 +28,20 @@ export const registeredWorklets: Map<
   Record<string, WorkletGraph>
 > = new Map();
 
+/** Disconnect all registered worklet nodes from the audio graph (stops lip-sync bleed on interrupt). */
+export function disconnectRegisteredWorkletsFromOutputs(context: AudioContext): void {
+  const rec = registeredWorklets.get(context);
+  if (!rec) return;
+  for (const { node } of Object.values(rec)) {
+    if (!node) continue;
+    try {
+      node.disconnect();
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 export const createWorketFromSrc = (
   workletName: string,
   workletSrc: string,

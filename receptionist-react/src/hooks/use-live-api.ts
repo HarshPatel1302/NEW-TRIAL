@@ -14,14 +14,23 @@
  * limitations under the License.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { MutableRefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GenAILiveClient } from "../lib/genai-live-client";
 import { LiveClientOptions } from "../types";
 import { AudioStreamer, LipSyncData } from "../lib/audio-streamer";
+import { cancelKioskLocalSpeech } from "../receptionist/local-cue-speech";
+import {
+  acceptAssistantPcmChunk,
+  bumpPlaybackEpoch,
+  invalidateAssistantUtteranceAnchor,
+  releaseAssistantOutputGate,
+} from "../receptionist/kiosk-playback-epoch";
 import { audioContext } from "../lib/utils";
 import VolMeterWorket from "../lib/worklets/vol-meter";
 import LipSyncAnalyserWorklet from "../lib/worklets/lip-sync-analyser";
 import { LiveConnectConfig } from "@google/genai";
+import { defaultDeterministicLocalPromptsEnabled } from "../receptionist/kiosk-runtime-defaults";
+import { recordBargeInCompleted, recordBargeWhenAssistantSilent } from "../receptionist/kiosk-barge-metrics";
 
 export type UseLiveAPIResults = {
   client: GenAILiveClient;
@@ -36,6 +45,16 @@ export type UseLiveAPIResults = {
   assistantAudioPlaying: boolean;
   /** Ref to real-time lip sync frequency data (read in useFrame, no re-renders) */
   lipSyncRef: React.MutableRefObject<LipSyncData>;
+  /** Immediate cut of assistant audio + epoch bump when user talks over the model */
+  bargeInAssistant: () => void;
+  /** Ref mirrors playback start/stop without waiting for React render (barge-in / VAD). */
+  assistantAudioPlayingRef: MutableRefObject<boolean>;
+  /** Mic chunk: arms SLA timer; clears when model audio plays. */
+  notifyUserMicActivity: () => void;
+  /** If model is slow after user spoke, kiosk can speak deterministic next step. */
+  registerSlaFallbackHandler: (handler: (() => void) | null) => void;
+  /** Client-side barge-in with optional perf timing (volume edge → interrupt complete). */
+  bargeInAssistantFromUser: (ctx?: { in_volume: number; prev_volume: number; t0: number }) => void;
 };
 
 const MAX_RECONNECT_ATTEMPTS = 8;
@@ -50,7 +69,11 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
   const [connected, setConnected] = useState(false);
   const [volume, setVolume] = useState(0);
   const [assistantAudioPlaying, setAssistantAudioPlaying] = useState(false);
+  const assistantAudioPlayingRef = useRef(false);
 
+  const lastBargeInAtRef = useRef(0);
+  const slaTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const slaHandlerRef = useRef<(() => void) | null>(null);
   const intentionalDisconnectRef = useRef(false);
   const reconnectAttemptsRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -77,9 +100,18 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
       audioContext({ id: "audio-out" }).then(async (audioCtx: AudioContext) => {
         const streamer = new AudioStreamer(audioCtx);
         audioStreamerRef.current = streamer;
-        streamer.onPlaybackStart = () => setAssistantAudioPlaying(true);
-        streamer.onPlaybackStop = () => setAssistantAudioPlaying(false);
-        streamer.onComplete = () => setAssistantAudioPlaying(false);
+        streamer.onPlaybackStart = () => {
+          assistantAudioPlayingRef.current = true;
+          setAssistantAudioPlaying(true);
+        };
+        streamer.onPlaybackStop = () => {
+          assistantAudioPlayingRef.current = false;
+          setAssistantAudioPlaying(false);
+        };
+        streamer.onComplete = () => {
+          assistantAudioPlayingRef.current = false;
+          setAssistantAudioPlaying(false);
+        };
 
         await streamer.addWorklet<any>("vumeter-out", VolMeterWorket, (ev: any) => {
           setVolume(ev.data.volume);
@@ -149,6 +181,11 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
       console.log("Connection closed", { code: event?.code, reason: event?.reason });
       setConnected(false);
       setAssistantAudioPlaying(false);
+      assistantAudioPlayingRef.current = false;
+      if (slaTimerRef.current) {
+        clearTimeout(slaTimerRef.current);
+        slaTimerRef.current = null;
+      }
 
       if (!intentionalDisconnectRef.current && hasEverConnectedRef.current) {
         attemptReconnect();
@@ -159,18 +196,35 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
       console.error("Connection error", error);
     };
 
-    const stopAudioStreamer = () => audioStreamerRef.current?.stop();
-    const completeAudioStreamer = () => audioStreamerRef.current?.complete();
+    const onInterruptedPlayback = () => {
+      releaseAssistantOutputGate();
+      invalidateAssistantUtteranceAnchor("client_interrupted");
+      audioStreamerRef.current?.interruptPlaybackNow();
+    };
+    const completeAudioStreamer = () => {
+      releaseAssistantOutputGate();
+      invalidateAssistantUtteranceAnchor("client_turncomplete");
+      audioStreamerRef.current?.complete();
+    };
 
-    const onAudio = (data: ArrayBuffer) =>
+    const onAudio = (data: ArrayBuffer) => {
+      cancelKioskLocalSpeech();
+      if (slaTimerRef.current) {
+        clearTimeout(slaTimerRef.current);
+        slaTimerRef.current = null;
+      }
+      if (!acceptAssistantPcmChunk()) {
+        return;
+      }
       audioStreamerRef.current?.addPCM16(new Uint8Array(data));
+    };
 
     client
       .on("error", onError)
       .on("open", onOpen)
       .on("setupcomplete", onSetupComplete)
       .on("close", onClose)
-      .on("interrupted", stopAudioStreamer)
+      .on("interrupted", onInterruptedPlayback)
       .on("turncomplete", completeAudioStreamer)
       .on("audio", onAudio);
 
@@ -180,7 +234,7 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
         .off("open", onOpen)
         .off("setupcomplete", onSetupComplete)
         .off("close", onClose)
-        .off("interrupted", stopAudioStreamer)
+        .off("interrupted", onInterruptedPlayback)
         .off("turncomplete", completeAudioStreamer)
         .off("audio", onAudio);
       // Do NOT call disconnect() here: this effect re-runs when `attemptReconnect`
@@ -223,7 +277,77 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
     client.disconnect();
     setConnected(false);
     setAssistantAudioPlaying(false);
+    assistantAudioPlayingRef.current = false;
+    if (slaTimerRef.current) {
+      clearTimeout(slaTimerRef.current);
+      slaTimerRef.current = null;
+    }
   }, [setConnected, client]);
+
+  const runBargeInCore = useCallback(() => {
+    const now = Date.now();
+    if (now - lastBargeInAtRef.current < 260) {
+      return;
+    }
+    lastBargeInAtRef.current = now;
+    if (slaTimerRef.current) {
+      clearTimeout(slaTimerRef.current);
+      slaTimerRef.current = null;
+    }
+    bumpPlaybackEpoch("user_barge_in");
+    cancelKioskLocalSpeech();
+    invalidateAssistantUtteranceAnchor("user_barge_in");
+    audioStreamerRef.current?.interruptPlaybackNow();
+  }, []);
+
+  const bargeInAssistant = useCallback(() => {
+    const wasPlaying = assistantAudioPlayingRef.current;
+    recordBargeWhenAssistantSilent(wasPlaying);
+    runBargeInCore();
+  }, [runBargeInCore]);
+
+  const bargeInAssistantFromUser = useCallback(
+    (ctx?: { in_volume: number; prev_volume: number; t0: number }) => {
+      const wasPlaying = assistantAudioPlayingRef.current;
+      recordBargeWhenAssistantSilent(wasPlaying);
+      const tStart = typeof performance !== "undefined" ? performance.now() : Date.now();
+      runBargeInCore();
+      const tEnd = typeof performance !== "undefined" ? performance.now() : Date.now();
+      if (ctx && wasPlaying) {
+        recordBargeInCompleted(tEnd - tStart, {
+          in_volume: ctx.in_volume,
+          prev_volume: ctx.prev_volume,
+        });
+      }
+    },
+    [runBargeInCore]
+  );
+
+  const registerSlaFallbackHandler = useCallback((handler: (() => void) | null) => {
+    slaHandlerRef.current = handler;
+  }, []);
+
+  const notifyUserMicActivity = useCallback(() => {
+    if (!defaultDeterministicLocalPromptsEnabled()) return;
+    if (slaTimerRef.current) {
+      clearTimeout(slaTimerRef.current);
+      slaTimerRef.current = null;
+    }
+    const raw = Number(process.env.REACT_APP_MODEL_SLA_MS);
+    const slaMs = Number.isFinite(raw) ? Math.max(2800, Math.min(12000, raw)) : 5200;
+    slaTimerRef.current = setTimeout(() => {
+      slaTimerRef.current = null;
+      if (assistantAudioPlayingRef.current) return;
+      const fn = slaHandlerRef.current;
+      if (fn) {
+        try {
+          fn();
+        } catch (e) {
+          console.warn("[useLiveAPI] SLA fallback failed", e);
+        }
+      }
+    }, slaMs);
+  }, []);
 
   return {
     client,
@@ -237,5 +361,10 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
     volume,
     assistantAudioPlaying,
     lipSyncRef,
+    bargeInAssistant,
+    assistantAudioPlayingRef,
+    notifyUserMicActivity,
+    registerSlaFallbackHandler,
+    bargeInAssistantFromUser,
   };
 }

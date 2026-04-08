@@ -22,9 +22,21 @@ import { UseMediaStreamResult } from "../../hooks/use-media-stream-mux";
 import { useScreenCapture } from "../../hooks/use-screen-capture";
 import { useWebcam } from "../../hooks/use-webcam";
 import { AudioRecorder } from "../../lib/audio-recorder";
+import { recordSuspectedMissedBarge } from "../../receptionist/kiosk-barge-metrics";
+import { perfMarkUserAudioSent } from "../../receptionist/perf-latency";
 import AudioPulse from "../audio-pulse/AudioPulse";
 import "./control-tray.scss";
 import SettingsDialog from "../settings-dialog/SettingsDialog";
+
+function kioskEnvFloat01(name: string, fallback: number): number {
+  const v = Number(process.env[name]);
+  return Number.isFinite(v) && v > 0 ? Math.min(0.35, Math.max(0.004, v)) : fallback;
+}
+
+function kioskEnvIntMs(name: string, fallback: number): number {
+  const v = Number(process.env[name]);
+  return Number.isFinite(v) && v >= 80 ? Math.min(8000, Math.round(v)) : fallback;
+}
 
 export type ControlTrayProps = {
   videoRef: RefObject<HTMLVideoElement>;
@@ -77,8 +89,19 @@ function ControlTray({
   const autoStartInFlightRef = useRef(false);
   const wasConnectedRef = useRef(false);
 
-  const { client, connected, connect, disconnect, volume } =
-    useLiveAPIContext();
+  const {
+    client,
+    connected,
+    connect,
+    disconnect,
+    volume,
+    bargeInAssistantFromUser,
+    assistantAudioPlayingRef,
+    notifyUserMicActivity,
+  } = useLiveAPIContext();
+  const prevInVolumeRef = useRef(0);
+  const bargeLoudSinceRef = useRef<number | null>(null);
+  const bargeMissReportedRef = useRef(false);
 
   useEffect(() => {
     if (!connected && connectButtonRef.current) {
@@ -92,11 +115,47 @@ function ControlTray({
     );
   }, [inVolume]);
 
+  /** Barge-in: user speech rising edge while assistant audio is playing; metrics for noisy lobbies. */
+  useEffect(() => {
+    if (!connected || muted) {
+      prevInVolumeRef.current = inVolume;
+      bargeLoudSinceRef.current = null;
+      bargeMissReportedRef.current = false;
+      return;
+    }
+    const rise = kioskEnvFloat01("REACT_APP_BARGE_IN_VOLUME_RISE", 0.045);
+    const floorPrev = kioskEnvFloat01("REACT_APP_BARGE_IN_VOLUME_FLOOR", 0.028);
+    const missVol = kioskEnvFloat01("REACT_APP_BARGE_IN_MISS_DETECT_VOLUME", 0.072);
+    const sustainedMs = kioskEnvIntMs("REACT_APP_BARGE_IN_MISS_SUSTAINED_MS", 420);
+    const prev = prevInVolumeRef.current;
+    prevInVolumeRef.current = inVolume;
+    const playing = assistantAudioPlayingRef.current;
+    if (playing && inVolume > rise && prev <= floorPrev) {
+      bargeLoudSinceRef.current = null;
+      bargeMissReportedRef.current = false;
+      const t0 = typeof performance !== "undefined" ? performance.now() : Date.now();
+      bargeInAssistantFromUser({ in_volume: inVolume, prev_volume: prev, t0 });
+    } else if (playing && inVolume >= missVol) {
+      const now = typeof performance !== "undefined" ? performance.now() : Date.now();
+      if (bargeLoudSinceRef.current === null) {
+        bargeLoudSinceRef.current = now;
+      } else if (!bargeMissReportedRef.current && now - bargeLoudSinceRef.current >= sustainedMs) {
+        bargeMissReportedRef.current = true;
+        recordSuspectedMissedBarge({ inVolume, sustainedMs });
+      }
+    } else {
+      bargeLoudSinceRef.current = null;
+      bargeMissReportedRef.current = false;
+    }
+  }, [inVolume, connected, muted, bargeInAssistantFromUser, assistantAudioPlayingRef]);
+
   useEffect(() => {
     const onData = (base64: string) => {
       if (!connected || client.status !== "connected") {
         return;
       }
+      perfMarkUserAudioSent();
+      notifyUserMicActivity();
       client.sendRealtimeInput([
         {
           mimeType: "audio/pcm;rate=16000",
@@ -112,7 +171,7 @@ function ControlTray({
     return () => {
       audioRecorder.off("data", onData).off("volume", setInVolume);
     };
-  }, [connected, client, muted, audioRecorder]);
+  }, [connected, client, muted, audioRecorder, notifyUserMicActivity]);
 
   useEffect(() => {
     if (videoRef.current) {

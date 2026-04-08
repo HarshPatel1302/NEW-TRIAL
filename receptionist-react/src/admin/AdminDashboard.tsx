@@ -1,4 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  fetchKioskProxyHealth,
+  fetchKioskProxyStatus,
+  isKioskGateProxyEnabled,
+} from "../receptionist/kiosk-backend-gate";
+import { kioskProxyDebugUiEnabled } from "../receptionist/kiosk-runtime-defaults";
 import "./admin-dashboard.css";
 
 type SummaryResponse = {
@@ -314,6 +320,7 @@ export default function AdminDashboard() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>("");
   const [downloading, setDownloading] = useState<string>("");
+  const [kioskProxyDiag, setKioskProxyDiag] = useState<Record<string, unknown> | null>(null);
 
   const loadSessionEvents = useCallback(async (sessionId: string) => {
     if (!sessionId) {
@@ -328,6 +335,35 @@ export default function AdminDashboard() {
       setEvents(res.events || []);
     } catch {
       setEvents([]);
+    }
+  }, []);
+
+  const loadKioskProxyDiagnostics = useCallback(async () => {
+    if (!kioskProxyDebugUiEnabled()) {
+      setKioskProxyDiag(null);
+      return;
+    }
+    if (!isKioskGateProxyEnabled()) {
+      setKioskProxyDiag({
+        frontendKioskProxyClient: false,
+        hint: "Set REACT_APP_KIOSK_GATE_PROXY (truthy) and REACT_APP_RECEPTIONIST_API_KEY to query /api/kiosk/*.",
+      });
+      return;
+    }
+    try {
+      const [health, status] = await Promise.all([fetchKioskProxyHealth(), fetchKioskProxyStatus()]);
+      setKioskProxyDiag({
+        frontendKioskProxyClient: true,
+        health,
+        proxyStatus: status,
+        fallbackNote:
+          "If proxyEnabled is false on the server, the kiosk uses direct gate / local member directory.",
+      });
+    } catch (e) {
+      setKioskProxyDiag({
+        frontendKioskProxyClient: true,
+        loadError: e instanceof Error ? e.message : String(e),
+      });
     }
   }, []);
 
@@ -352,12 +388,13 @@ export default function AdminDashboard() {
       setVisitors(visitorsRes.visitors || []);
       setSessions(sessionsRes.sessions || []);
       setAuditLogs(auditRes.logs || []);
+      await loadKioskProxyDiagnostics();
     } catch (err: any) {
       setError(err?.message || "Failed to load dashboard data.");
     } finally {
       setLoading(false);
     }
-  }, [days, intentFilter, statusFilter]);
+  }, [days, intentFilter, statusFilter, loadKioskProxyDiagnostics]);
 
   useEffect(() => {
     void refresh();
@@ -406,7 +443,7 @@ export default function AdminDashboard() {
     <div className="admin-page">
       <header className="admin-header">
         <div>
-          <h1>Greenscape Receptionist Admin</h1>
+          <h1>Cyberone Receptionist Admin</h1>
           <p>Visitor logs, session analytics, and audit stream</p>
         </div>
         <div className="admin-header-actions">
@@ -458,6 +495,20 @@ export default function AdminDashboard() {
       </section>
 
       {error ? <div className="admin-error">{error}</div> : null}
+
+      {kioskProxyDebugUiEnabled() ? (
+        <section className="admin-card admin-proxy-debug">
+          <h2>Kiosk gate proxy (debug)</h2>
+          <p className="admin-proxy-debug-hint">
+            Enable with <code>REACT_APP_KIOSK_PROXY_DEBUG=1</code>. Shows{" "}
+            <code>GET /api/kiosk/health</code> and <code>GET /api/kiosk/proxy-status</code>. Refreshes with
+            the dashboard Refresh button.
+          </p>
+          <pre className="admin-proxy-debug-pre">
+            {JSON.stringify(kioskProxyDiag, null, 2)}
+          </pre>
+        </section>
+      ) : null}
 
       <section className="admin-kpis">
         <article>

@@ -49,6 +49,8 @@ export type MatchedMember = {
   company_name: string;
 };
 
+export type MemberSearchMode = "all" | "company" | "recipient";
+
 export type MemberLookupResult = {
   configured: boolean;
   ok: boolean;
@@ -80,11 +82,26 @@ const MEMBER_LIST_COMPANY_ID = String(
 
 const REQUEST_TIMEOUT_MS = 7000;
 const CACHE_TTL_MS = 5 * 60 * 1000;
+const LOOKUP_QUERY_CACHE_TTL_MS = 90 * 1000;
 const MIN_SCORE_FOR_MATCH = 45;
 
 let authToken: string | null = null;
 let authPromise: Promise<string> | null = null;
 let memberCache: { fetchedAt: number; rows: MemberUnitRecord[] } | null = null;
+const memberQueryResultCache = new Map<string, { at: number; result: MemberLookupResult }>();
+
+/** Warm member list in the background after kiosk connects (reduces first destination lookup latency). */
+export function prefetchMemberDirectory(): void {
+  if (!hasMemberApiConfig()) return;
+  void fetchMemberDirectoryRows().catch(() => {
+    /* ignore */
+  });
+}
+
+/** Test hook */
+export function clearMemberQueryCacheForTests(): void {
+  memberQueryResultCache.clear();
+}
 
 function normalizeText(input: unknown) {
   return String(input || "")
@@ -389,6 +406,26 @@ function scoreMember(member: MatchedMember, query: string) {
   return score;
 }
 
+function scoreMemberWithMode(member: MatchedMember, query: string, mode: MemberSearchMode = "all") {
+  let s = scoreMember(member, query);
+  const nq = normalizeText(query);
+  if (!nq) return s;
+  const cn = normalizeText(member.company_name);
+  const mn = normalizeText(member.member_name);
+  const umn = normalizeText(member.unit_member_name);
+  if (mode === "company" && cn) {
+    if (cn.includes(nq) || tokenize(nq).every((token) => cn.includes(token))) {
+      s += 75;
+    }
+  }
+  if (mode === "recipient" && nq) {
+    if ((mn && mn.includes(nq)) || (umn && umn.includes(nq))) {
+      s += 65;
+    }
+  }
+  return s;
+}
+
 function flattenMembers(rows: MemberUnitRecord[]): MatchedMember[] {
   const flattened: MatchedMember[] = [];
 
@@ -477,12 +514,13 @@ export function decodeMembersFromNotes(encoded: string) {
 
 export async function resolveMembersForDestination(
   primaryQuery: string,
-  options: { secondaryQuery?: string; maxResults?: number } = {}
+  options: { secondaryQuery?: string; maxResults?: number; searchMode?: MemberSearchMode } = {}
 ): Promise<MemberLookupResult> {
   const normalizedPrimary = toDisplayText(primaryQuery);
   const normalizedSecondary = toDisplayText(options.secondaryQuery || "");
   const combinedQuery = [normalizedPrimary, normalizedSecondary].filter(Boolean).join(" ").trim();
   const scoringQuery = normalizedPrimary || combinedQuery;
+  const searchMode: MemberSearchMode = options.searchMode || "all";
 
   if (!scoringQuery) {
     return {
@@ -493,6 +531,33 @@ export async function resolveMembersForDestination(
       matchedMembers: [],
       totalCandidates: 0,
       message: "Destination query is empty.",
+    };
+  }
+
+  try {
+    const { kioskMemberSearch, isKioskGateProxyEnabled } = await import("./kiosk-backend-gate");
+    if (isKioskGateProxyEnabled()) {
+      const proxied = await kioskMemberSearch(scoringQuery, normalizedSecondary, searchMode);
+      if (proxied) {
+        const maxResults = Math.max(1, Math.min(Number(options.maxResults || 5), 10));
+        return {
+          ...proxied,
+          matchedMembers: proxied.matchedMembers.slice(0, maxResults),
+          memberIds: proxied.memberIds.slice(0, maxResults),
+        };
+      }
+    }
+  } catch (e) {
+    console.warn("[resolveMembersForDestination] kiosk proxy unavailable", e);
+  }
+
+  const queryCacheKey = `${normalizeText(scoringQuery)}|${searchMode}`;
+  const cachedLookup = memberQueryResultCache.get(queryCacheKey);
+  if (cachedLookup && Date.now() - cachedLookup.at < LOOKUP_QUERY_CACHE_TTL_MS) {
+    return {
+      ...cachedLookup.result,
+      matchedMembers: cachedLookup.result.matchedMembers.map((m) => ({ ...m })),
+      memberIds: [...cachedLookup.result.memberIds],
     };
   }
 
@@ -514,7 +579,7 @@ export async function resolveMembersForDestination(
   const scored = members
     .map((member) => ({
       member,
-      score: scoreMember(member, scoringQuery),
+      score: scoreMemberWithMode(member, scoringQuery, searchMode),
     }))
     .filter((entry) => entry.score >= MIN_SCORE_FOR_MATCH)
     .sort((a, b) => b.score - a.score);
@@ -533,7 +598,7 @@ export async function resolveMembersForDestination(
     .slice(0, maxResults)
     .map((entry) => entry.member);
 
-  return {
+  const resolved: MemberLookupResult = {
     configured: true,
     ok: true,
     query: scoringQuery,
@@ -543,4 +608,13 @@ export async function resolveMembersForDestination(
     statusCode: directory.statusCode,
     message: deduped.length > 0 ? "matched" : "no_match",
   };
+  memberQueryResultCache.set(queryCacheKey, {
+    at: Date.now(),
+    result: {
+      ...resolved,
+      matchedMembers: resolved.matchedMembers.map((m) => ({ ...m })),
+      memberIds: [...resolved.memberIds],
+    },
+  });
+  return resolved;
 }

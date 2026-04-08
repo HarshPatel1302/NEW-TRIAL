@@ -3,6 +3,8 @@ export interface Visitor {
     name: string;
     phone: string;
     meetingWith: string;
+    /** Where the visitor is coming from (Cyber One walk-in). */
+    cameFrom?: string;
     timestamp: number;
     photo?: string;
     // Intent-based fields
@@ -69,6 +71,7 @@ export class DatabaseManager {
                     name: normalized.name,
                     phone: normalized.phone,
                     meetingWith: normalized.meetingWith,
+                    cameFrom: normalized.cameFrom,
                     intent: normalized.intent,
                     department: normalized.department,
                     purpose: normalized.purpose,
@@ -108,6 +111,7 @@ export class DatabaseManager {
                     name: normalized.name,
                     phone: normalized.phone,
                     meetingWith: normalized.meetingWith,
+                    cameFrom: normalized.cameFrom,
                     intent: normalized.intent,
                     department: normalized.department,
                     purpose: normalized.purpose,
@@ -302,6 +306,11 @@ export class DatabaseManager {
             name: String(raw?.name ?? ''),
             phone: String(raw?.phone ?? ''),
             meetingWith: String(raw?.meetingWith ?? raw?.meeting_with ?? ''),
+            cameFrom: raw?.cameFrom != null
+                ? String(raw.cameFrom)
+                : raw?.came_from != null
+                    ? String(raw.came_from)
+                    : undefined,
             timestamp: Number.isFinite(parsedTimestamp) ? parsedTimestamp : Date.now(),
             photo: raw?.photo ? String(raw.photo) : undefined,
             intent: String(raw?.intent ?? 'unknown'),

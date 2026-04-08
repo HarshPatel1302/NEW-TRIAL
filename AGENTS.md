@@ -2,7 +2,7 @@
 
 ## Project Purpose
 
-Production virtual receptionist kiosk for building lobbies. Visitors interact with a 3D avatar via voice. The system identifies intent (visit, delivery, returning visitor), collects required details, captures a photo, saves the record, and provides lobby instructions.
+Production virtual receptionist kiosk for building lobbies. Visitors interact with a 3D avatar via voice. The system supports **new visitor check-in** and **delivery / parcel** only: intent classification, required slots, photo when required, save/log/notify, and lobby instructions.
 
 ## Tech Stack
 
@@ -16,14 +16,11 @@ Production virtual receptionist kiosk for building lobbies. Visitors interact wi
 
 ## Major Flows
 
-### 1. Visitor Check-in
-Greeting → intent classification → collect name, phone, meeting_with → capture photo → save visitor → farewell with lobby instructions.
+### 1. Visitor Check-in (new visitor only)
+Greeting → intent classification → phone → name → coming from → company to visit → optional person to meet → capture photo → save visitor → log / notify → lobby wait → farewell.
 
 ### 2. Delivery / Parcel
-Greeting → intent classification → collect visitor_name, delivery_company, recipient_company, recipient_name → request delivery approval → instruction (wait at lobby or deliver to floor) → farewell.
-
-### 3. Returning Visitor
-Greeting → intent classification → phone lookup → confirm identity → update record → farewell.
+Greeting → intent classification → delivery person name, delivery company, recipient company, recipient person → capture photo if required → request delivery approval → instruction → farewell.
 
 ## Key Directories
 

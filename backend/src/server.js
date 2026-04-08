@@ -65,6 +65,7 @@ function toVisitorDto(row) {
     name: row.name,
     phone: row.phone,
     meetingWith: row.meeting_with || "",
+    cameFrom: row.came_from || "",
     timestamp: new Date(row.updated_at || row.created_at).getTime(),
     intent: row.intent || "unknown",
     department: row.department || "",
@@ -181,6 +182,7 @@ app.post("/api/visitors/upsert", async (req, res) => {
     name = "",
     phone = "",
     meetingWith = "",
+    cameFrom = "",
     intent = "unknown",
     department = "",
     purpose = "",
@@ -205,8 +207,8 @@ app.post("/api/visitors/upsert", async (req, res) => {
       result = await query(
         `INSERT INTO visitors (
           name, phone, normalized_phone, meeting_with, intent, department,
-          purpose, company, appointment_time, reference_id, notes, photo
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+          purpose, company, appointment_time, reference_id, notes, photo, came_from
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
         ON CONFLICT (normalized_phone) DO UPDATE SET
           name = EXCLUDED.name,
           phone = EXCLUDED.phone,
@@ -219,6 +221,7 @@ app.post("/api/visitors/upsert", async (req, res) => {
           reference_id = EXCLUDED.reference_id,
           notes = EXCLUDED.notes,
           photo = EXCLUDED.photo,
+          came_from = EXCLUDED.came_from,
           updated_at = NOW()
         RETURNING *`,
         [
@@ -234,14 +237,15 @@ app.post("/api/visitors/upsert", async (req, res) => {
           String(referenceId),
           String(notes),
           String(photo),
+          String(cameFrom || ""),
         ]
       );
     } else {
       result = await query(
         `INSERT INTO visitors (
           name, phone, normalized_phone, meeting_with, intent, department,
-          purpose, company, appointment_time, reference_id, notes, photo
-        ) VALUES ($1,$2,NULL,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+          purpose, company, appointment_time, reference_id, notes, photo, came_from
+        ) VALUES ($1,$2,NULL,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
         RETURNING *`,
         [
           name.trim(),
@@ -255,6 +259,7 @@ app.post("/api/visitors/upsert", async (req, res) => {
           String(referenceId),
           String(notes),
           String(photo),
+          String(cameFrom || ""),
         ]
       );
     }
@@ -627,8 +632,8 @@ app.get("/api/exports/visitors.csv", async (_req, res) => {
   try {
     const result = await query(
       `SELECT
-        id, name, phone, meeting_with, intent, department, purpose, company,
-        appointment_time, reference_id, notes, created_at, updated_at
+        id, name, phone, meeting_with, came_from, intent, department, purpose, company,
+        appointment_time, reference_id, notes, photo, created_at, updated_at
        FROM visitors
        ORDER BY updated_at DESC`
     );
@@ -638,6 +643,7 @@ app.get("/api/exports/visitors.csv", async (_req, res) => {
       "name",
       "phone",
       "meeting_with",
+      "came_from",
       "intent",
       "department",
       "purpose",
@@ -645,6 +651,7 @@ app.get("/api/exports/visitors.csv", async (_req, res) => {
       "appointment_time",
       "reference_id",
       "notes",
+      "photo",
       "created_at",
       "updated_at",
     ];
@@ -657,6 +664,7 @@ app.get("/api/exports/visitors.csv", async (_req, res) => {
           row.name,
           row.phone,
           row.meeting_with,
+          row.came_from,
           row.intent,
           row.department,
           row.purpose,
@@ -664,6 +672,7 @@ app.get("/api/exports/visitors.csv", async (_req, res) => {
           row.appointment_time,
           row.reference_id,
           row.notes,
+          row.photo,
           row.created_at,
           row.updated_at,
         ]
@@ -687,8 +696,8 @@ app.get("/api/exports/visitors.xlsx", async (_req, res) => {
   try {
     const result = await query(
       `SELECT
-        id, name, phone, meeting_with, intent, department, purpose, company,
-        appointment_time, reference_id, notes, created_at, updated_at
+        id, name, phone, meeting_with, came_from, intent, department, purpose, company,
+        appointment_time, reference_id, notes, photo, created_at, updated_at
        FROM visitors
        ORDER BY updated_at DESC`
     );
@@ -698,6 +707,7 @@ app.get("/api/exports/visitors.xlsx", async (_req, res) => {
       name: row.name,
       phone: row.phone,
       meeting_with: row.meeting_with,
+      came_from: row.came_from,
       intent: row.intent,
       department: row.department,
       purpose: row.purpose,
@@ -705,6 +715,7 @@ app.get("/api/exports/visitors.xlsx", async (_req, res) => {
       appointment_time: row.appointment_time,
       reference_id: row.reference_id,
       notes: row.notes,
+      photo: row.photo,
       created_at: row.created_at,
       updated_at: row.updated_at,
     }));
@@ -787,6 +798,9 @@ app.get("/api/exports/sessions.csv", async (_req, res) => {
     return res.status(500).json({ error: error.message });
   }
 });
+
+const { mountKioskGateRoutes } = require("./kiosk-gate-proxy");
+mountKioskGateRoutes(app);
 
 app.listen(PORT, () => {
   console.log(`Receptionist backend listening on http://localhost:${PORT}`);

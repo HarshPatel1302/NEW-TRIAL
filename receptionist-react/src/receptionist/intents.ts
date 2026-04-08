@@ -42,29 +42,6 @@ export const INTENTS: Record<string, Intent> = {
         }
     },
 
-    returning_visit: {
-        name: "returning_visit",
-        description: "Visitor has visited before; faster check-in and routing.",
-        config: {
-            required_slots: ["visitor_name", "department"],
-            optional_slots: ["purpose", "person_to_meet", "appointment_time", "reference_id", "notes"],
-            slot_prompts: {
-                visitor_name: "Please tell me your name.",
-                department: "Are you meeting Sales or Administration today?",
-                purpose: "What is the purpose of your visit today?",
-                person_to_meet: "Who are you meeting?",
-                appointment_time: "Do you have an appointment time?",
-                reference_id: "Do you have a booking or reference number?",
-                notes: "Any message I should pass along?"
-            },
-            completion_actions: {
-                route_to: "{department}",
-                notify: "{department}",
-                request_phone_keypad: true
-            }
-        }
-    },
-
     sales_inquiry: {
         name: "sales_inquiry",
         description: "Visitor wants project information, pricing, availability, or sales discussion.",

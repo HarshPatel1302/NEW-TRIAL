@@ -36,7 +36,7 @@ This is a production Virtual Receptionist kiosk application. The frontend is Rea
 ## Flow Rules
 
 7. **Prevent the assistant from asking the same question twice** unless the previous answer was missing or explicitly invalid.
-8. **Ensure flow order is logical and consistent.** Visitor flow: greeting → intent classification → slot collection (name, phone, meeting_with) → photo capture → save → farewell. Delivery flow: intent → slot collection (visitor_name, delivery_company, recipient_company, recipient_name) → delivery approval → instruction → farewell.
+8. **Ensure flow order is logical and consistent.** Visitor flow (new visitor only): greeting → intent classification → phone → name → coming from → company → optional person to meet → photo → save / log / notify → lobby wait → farewell. Delivery flow: intent → delivery person name, delivery company, recipient company, recipient person → photo if required → approval → instruction → farewell.
 9. **After capturing visitor or delivery details and photo, the assistant must conclude properly** with a clear farewell message and next-step instruction.
 10. **At the end of every interaction, auto-close the session after 5 seconds of no further interaction.**
 

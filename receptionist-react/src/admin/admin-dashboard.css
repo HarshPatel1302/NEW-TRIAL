@@ -1,3 +1,29 @@
+.admin-proxy-debug {
+  margin-bottom: 1.25rem;
+}
+
+.admin-proxy-debug-hint {
+  margin: 0 0 0.75rem;
+  font-size: 0.85rem;
+  color: var(--Neutral-60, #71717a);
+}
+
+.admin-proxy-debug-hint code {
+  font-size: 0.8rem;
+}
+
+.admin-proxy-debug-pre {
+  margin: 0;
+  max-height: 14rem;
+  overflow: auto;
+  padding: 0.75rem;
+  font-size: 0.7rem;
+  line-height: 1.35;
+  background: var(--Neutral-10, #18181b);
+  color: var(--Neutral-90, #fafafa);
+  border-radius: 6px;
+}
+
 .admin-page {
   height: 100%;
   min-height: 100dvh;

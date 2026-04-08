@@ -16,7 +16,13 @@ function buildAuthMiddleware() {
     // When this middleware is mounted at `/api`, `req.path` is relative (e.g. `/health`).
     // Keep health checks public even if route registration order changes.
     const path = String(req.path || "");
-    if (path === "/health" || path === "/health/live" || path === "/health/ready") {
+    if (
+      path === "/health" ||
+      path === "/health/live" ||
+      path === "/health/ready" ||
+      path === "/kiosk/proxy-status" ||
+      path === "/kiosk/health"
+    ) {
       return next();
     }
 
@@ -51,7 +57,14 @@ function buildRateLimiter() {
   return rateLimit({
     windowMs,
     max,
-    skip: (req) => req.path.startsWith("/api/health"),
+    skip: (req) => {
+      const p = String(req.path || "");
+      return (
+        p.startsWith("/api/health") ||
+        p === "/api/kiosk/proxy-status" ||
+        p === "/api/kiosk/health"
+      );
+    },
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: "Too many requests, please try again shortly." },

@@ -30,8 +30,56 @@ import {
 
 import { EventEmitter } from "eventemitter3";
 import { difference } from "lodash";
+import {
+  invalidateAssistantUtteranceAnchor,
+  releaseAssistantOutputGate,
+} from "../receptionist/kiosk-playback-epoch";
+import { perfMark, perfNoteEstimatedEosToFirstModelAudio } from "../receptionist/perf-latency";
 import { LiveClientOptions, StreamingLog } from "../types";
 import { base64ToArrayBuffer } from "./utils";
+
+type LiveConnectConfigWithLegacyGen = LiveConnectConfig & {
+  generationConfig?: {
+    temperature?: number;
+    topP?: number;
+    topK?: number;
+    maxOutputTokens?: number;
+    mediaResolution?: LiveConnectConfig["mediaResolution"];
+    seed?: number;
+  };
+};
+
+/**
+ * @google/genai warns if `generationConfig` is set on LiveConnectConfig; hoist fields to the top level.
+ */
+function flattenLiveConnectConfig(config: LiveConnectConfig): LiveConnectConfig {
+  const c = config as LiveConnectConfigWithLegacyGen;
+  const gc = c.generationConfig;
+  if (!gc) {
+    return config;
+  }
+  const { generationConfig: _removed, ...rest } = c;
+  const out = { ...rest } as LiveConnectConfig;
+  if (gc.temperature !== undefined && out.temperature === undefined) {
+    out.temperature = gc.temperature;
+  }
+  if (gc.topP !== undefined && out.topP === undefined) {
+    out.topP = gc.topP;
+  }
+  if (gc.topK !== undefined && out.topK === undefined) {
+    out.topK = gc.topK;
+  }
+  if (gc.maxOutputTokens !== undefined && out.maxOutputTokens === undefined) {
+    out.maxOutputTokens = gc.maxOutputTokens;
+  }
+  if (gc.mediaResolution !== undefined && out.mediaResolution === undefined) {
+    out.mediaResolution = gc.mediaResolution;
+  }
+  if (gc.seed !== undefined && out.seed === undefined) {
+    out.seed = gc.seed;
+  }
+  return out;
+}
 
 /**
  * Event types that can be emitted by the MultimodalLiveClient.
@@ -88,10 +136,12 @@ export class GenAILiveClient extends EventEmitter<LiveClientEventTypes> {
   }
 
   protected config: LiveConnectConfig | null = null;
+  private firstAudioMarkedForSession = false;
 
   private markDisconnected() {
     this._session = null;
     this._status = "disconnected";
+    this.firstAudioMarkedForSession = false;
   }
 
   private getSocketReadyState(): number | null {
@@ -151,9 +201,12 @@ export class GenAILiveClient extends EventEmitter<LiveClientEventTypes> {
       return false;
     }
 
+    const flatConfig = flattenLiveConnectConfig(config);
+
     this._status = "connecting";
-    this.config = config;
+    this.config = flatConfig;
     this._model = model;
+    this.firstAudioMarkedForSession = false;
 
     const callbacks: LiveCallbacks = {
       onopen: this.onopen,
@@ -165,7 +218,7 @@ export class GenAILiveClient extends EventEmitter<LiveClientEventTypes> {
     try {
       this._session = await this.client.live.connect({
         model,
-        config,
+        config: flatConfig,
         callbacks,
       });
     } catch (e) {
@@ -216,11 +269,15 @@ export class GenAILiveClient extends EventEmitter<LiveClientEventTypes> {
   protected async onmessage(message: LiveServerMessage) {
     if (message.setupComplete) {
       this.log("server.send", "setupComplete");
+      perfMark("live_setup_complete");
       this.emit("setupcomplete");
       return;
     }
     if (message.toolCall) {
+      releaseAssistantOutputGate();
+      invalidateAssistantUtteranceAnchor("server_toolcall");
       this.log("server.toolCall", message);
+      perfMark("toolcall_received", message.toolCall?.functionCalls?.[0]?.name);
       this.emit("toolcall", message.toolCall);
       return;
     }
@@ -236,11 +293,15 @@ export class GenAILiveClient extends EventEmitter<LiveClientEventTypes> {
       const { serverContent } = message;
       if ("interrupted" in serverContent) {
         this.log("server.content", "interrupted");
+        releaseAssistantOutputGate();
+        invalidateAssistantUtteranceAnchor("server_interrupted");
         this.emit("interrupted");
         return;
       }
       if ("turnComplete" in serverContent) {
         this.log("server.content", "turnComplete");
+        releaseAssistantOutputGate();
+        invalidateAssistantUtteranceAnchor("server_turncomplete");
         this.emit("turncomplete");
       }
 
@@ -260,6 +321,11 @@ export class GenAILiveClient extends EventEmitter<LiveClientEventTypes> {
         base64s.forEach((b64) => {
           if (b64) {
             const data = base64ToArrayBuffer(b64);
+            if (!this.firstAudioMarkedForSession) {
+              this.firstAudioMarkedForSession = true;
+              perfMark("first_model_audio");
+              perfNoteEstimatedEosToFirstModelAudio();
+            }
             this.emit("audio", data);
             this.log(`server.audio`, `buffer (${data.byteLength})`);
           }

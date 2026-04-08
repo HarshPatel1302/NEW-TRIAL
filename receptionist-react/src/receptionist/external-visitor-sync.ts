@@ -645,7 +645,7 @@ class GateVisitorApiClient {
     );
 
     try {
-      console.info("[WalkInSync] Login API call", {
+      console.debug("[WalkInSync] Login API call", {
         method: "POST",
         url: this.loginUrl,
       });
@@ -661,7 +661,7 @@ class GateVisitorApiClient {
       });
 
       const payload = (await parseEnvelopeSafe(response)) as LoginResponse;
-      console.info("[WalkInSync] Login API response", {
+      console.debug("[WalkInSync] Login API response", {
         status: response.status,
         ok: response.ok,
         message: toMessageText(payload?.message),
@@ -1413,75 +1413,6 @@ export async function syncWalkInDetailsToExternalApis(
     allSuccessful,
   });
   return output;
-}
-
-export async function lookupVisitorByMobile(mobile: string): Promise<VisitorSearchLookupResult> {
-  const normalized = normalizeIndianMobile(mobile);
-  if (!isValidIndianMobile(normalized)) {
-    return {
-      configured: true,
-      ok: false,
-      found: false,
-      message: "Please provide a valid 10-digit Indian mobile number.",
-      visitor: null,
-    };
-  }
-
-  const client = getGateApiClient();
-  const search = await client.searchVisitor({
-    name: "",
-    phone: normalized,
-    cameFrom: "",
-    meetingWith: "",
-  });
-
-  if (!search.result.configured) {
-    return {
-      configured: false,
-      ok: false,
-      found: false,
-      message: search.result.error || "Visitor search API not configured.",
-      visitor: null,
-    };
-  }
-
-  if (!search.result.ok) {
-    return {
-      configured: true,
-      ok: false,
-      found: false,
-      statusCode: search.result.statusCode,
-      message: search.result.error || search.result.message || "Visitor search failed.",
-      visitor: null,
-    };
-  }
-
-  if (!search.found || !search.visitorRow) {
-    return {
-      configured: true,
-      ok: true,
-      found: false,
-      statusCode: search.result.statusCode,
-      message: search.result.message || "Visitor not found.",
-      visitor: null,
-    };
-  }
-
-  const row = search.visitorRow;
-  return {
-    configured: true,
-    ok: true,
-    found: true,
-    statusCode: search.result.statusCode,
-    message: search.result.message || "Visitor found successfully.",
-    visitor: {
-      id: extractVisitorId(row) || 0,
-      name: sanitizeText(String(row.name || row.visitor_name || "")),
-      mobile: sanitizeText(String(row.mobile || row.mobile_number || normalized)),
-      visitorImage: sanitizeText(String(row.visitor_image || "")),
-      comingFrom: sanitizeText(String(row.coming_from || row.came_from || "")),
-    },
-  };
 }
 
 export async function warmupVisitorAuth(): Promise<void> {

@@ -5,7 +5,8 @@ export const TOOLS: Tool[] = [
         functionDeclarations: [
             {
                 name: "classify_intent",
-                description: "Classify the visitor into one of these intents: meet_person, delivery, or info.",
+                description:
+                    "REQUIRED when purpose is ambiguous. Classify the visitor into: meet_person, delivery, or info. Call before branch-specific questions if you are not certain.",
                 parameters: {
                     type: "OBJECT",
                     properties: {
@@ -21,7 +22,7 @@ export const TOOLS: Tool[] = [
             {
                 name: "collect_slot_value",
                 description:
-                    "Record one collected field. Visitor flow: visitor_name, phone, came_from, visit_company. Delivery: visitor_name, delivery_company, recipient_company, recipient_name.",
+                    "Call every time the user provides a slot value. Record one field per call. Visitor flow slots: visitor_name, phone, came_from, visit_company. Delivery slots: visitor_name, delivery_company, recipient_company, recipient_name. After a valid 10-digit visitor phone, the next required slot is always visitor_name. If the user gave multiple values in one utterance, call this tool once per value (prefer same turn).",
                 parameters: {
                     type: "OBJECT",
                     properties: {
@@ -96,17 +97,6 @@ export const TOOLS: Tool[] = [
                         approval_status: { type: "STRING", description: "Optional approval status" }
                     },
                     required: ["name", "phone"]
-                } as any
-            },
-            {
-                name: "check_returning_visitor",
-                description: "Search for an existing visitor by phone number. Call this immediately after collecting the phone number and before asking for the visitor's name. If found, greet them by name and skip name collection.",
-                parameters: {
-                    type: "OBJECT",
-                    properties: {
-                        phone: { type: "STRING", description: "The visitor's phone number (digits only)" }
-                    },
-                    required: ["phone"]
                 } as any
             },
             {
