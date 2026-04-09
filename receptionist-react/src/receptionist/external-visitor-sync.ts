@@ -1,3 +1,5 @@
+import { resolveReceptionistApiBaseUrl } from "../lib/receptionist-api-base";
+import { extractCoverUploadImageUrl } from "./cover-upload-response";
 import type { MatchedMember } from "./member-directory";
 
 type SyncKey =
@@ -125,9 +127,6 @@ const DEFAULT_DELIVERY_PURPOSE_CATEGORY_ID = Number(
 const DEFAULT_VISITOR_LOG_CARD_ID = Number(
   process.env.REACT_APP_VISITOR_LOG_CARD_ID || "1"
 );
-const RECEPTIONIST_API_BASE_URL = trimSlash(
-  process.env.REACT_APP_RECEPTIONIST_API_URL || "http://localhost:5050/api"
-);
 const RECEPTIONIST_API_KEY = process.env.REACT_APP_RECEPTIONIST_API_KEY || "";
 const KIOSK_ID = process.env.REACT_APP_KIOSK_ID || "";
 /** Optional full URL base for GET visitor search (e.g. mock or alternate path). Query params company_id & mobile_number are set/overwritten by the client. */
@@ -140,7 +139,22 @@ const VISITOR_CREATE_URL_OVERRIDE = String(
 const VISITOR_IMAGE_UPLOAD_URL = String(
   process.env.REACT_APP_VR_IMAGE_UPLOAD_URL || process.env.REACT_APP_IMAGE_UPLOAD_URL || ""
 ).trim();
-const MAX_UPLOAD_IMAGE_BYTES = 500 * 1024;
+/** Optional Bearer for direct multipart upload (meetservice, etc.). Prefer backend /api/media/upload-cover + COVER_UPLOAD_BEARER_TOKEN — avoids exposing long-lived tokens in the browser bundle. */
+const VISITOR_IMAGE_UPLOAD_AUTH_TOKEN = String(
+  process.env.REACT_APP_VR_IMAGE_UPLOAD_AUTH_TOKEN || ""
+).trim();
+
+const MAX_UPLOAD_IMAGE_BYTES = (() => {
+  const raw = Number(
+    (typeof process !== "undefined"
+      ? (process.env as Record<string, string | undefined>).REACT_APP_MAX_VISITOR_PHOTO_UPLOAD_BYTES
+      : undefined) || NaN
+  );
+  if (Number.isFinite(raw) && raw >= 200_000 && raw <= 5_000_000) {
+    return Math.floor(raw);
+  }
+  return Math.floor(1.5 * 1024 * 1024);
+})();
 
 export type VisitorSearchLookupResult = {
   configured: boolean;
@@ -351,8 +365,8 @@ function extractVisitorLogId(data: unknown): number | null {
 }
 
 /**
- * Gate `sendFcmNotification` expects multipart `file` like curl `--form file=@path`.
- * Appending a string does not produce a real file part; use a Blob filename.
+ * Gate `sendFcmNotification` accepts either multipart binary (`Blob`) or a **string** `file`
+ * field (HTTPS image URL after upload, or data/base64). The API often validates `file` as string.
  */
 function visitorPhotoToImageBlob(photo: string): Blob | null {
   const normalized = sanitizeText(photo);
@@ -406,6 +420,21 @@ function trimSlash(url: string) {
 
 function isHttpUrl(value: string) {
   return /^https?:\/\//i.test(String(value || "").trim());
+}
+
+/** `visitor_image` from add-visitor response — use for FCM `file` when it is a real URL or image payload (not placeholder). */
+function isUsableGateVisitorImage(value: unknown): value is string {
+  const s = typeof value === "string" ? value.trim() : "";
+  if (!s || s === "jj") {
+    return false;
+  }
+  if (isHttpUrl(s)) {
+    return true;
+  }
+  if (s.startsWith("data:") && s.length > 64) {
+    return true;
+  }
+  return /^[A-Za-z0-9+/=\s]+$/.test(s) && s.length >= 64;
 }
 
 function isUnauthorizedStatus(status: number) {
@@ -487,13 +516,14 @@ async function uploadVisitorPhotoToCloud(
     return {
       ok: false,
       url: "",
-      error: `Captured image exceeds 500KB (${Math.round(imageBlob.size / 1024)}KB). Please retake photo.`,
+      error: `Captured image exceeds ${Math.round(MAX_UPLOAD_IMAGE_BYTES / 1024)}KB (${Math.round(imageBlob.size / 1024)}KB). Please retake photo.`,
     };
   }
 
+  const receptionistBase = trimSlash(resolveReceptionistApiBaseUrl());
   const requestUrl =
     VISITOR_IMAGE_UPLOAD_URL ||
-    (RECEPTIONIST_API_BASE_URL ? `${RECEPTIONIST_API_BASE_URL}/media/upload-cover` : "");
+    (receptionistBase ? `${receptionistBase}/media/upload-cover` : "");
   if (!requestUrl) {
     return { ok: false, url: "", error: "Image upload API is not configured." };
   }
@@ -515,11 +545,12 @@ async function uploadVisitorPhotoToCloud(
     if (VISITOR_IMAGE_UPLOAD_URL) {
       const formData = new FormData();
       formData.append("cover_image", imageBlob, fileName);
+      const bearer =
+        sanitizeText(VISITOR_IMAGE_UPLOAD_AUTH_TOKEN) ||
+        sanitizeText(authContext.authToken || "");
       response = await fetch(requestUrl, {
         method: "POST",
-        headers: authContext.authToken
-          ? { Authorization: `Bearer ${sanitizeText(authContext.authToken)}` }
-          : undefined,
+        headers: bearer ? { Authorization: `Bearer ${bearer}` } : undefined,
         body: formData,
         signal: controller.signal,
       });
@@ -574,15 +605,14 @@ async function uploadVisitorPhotoToCloud(
       };
     }
 
-    const s3Link = sanitizeText(
-      ((payload?.data as Record<string, unknown> | undefined)?.s3_link as string) ||
-        ((payload?.data as Record<string, unknown> | undefined)?.s3Link as string) ||
-        ((payload?.data as Record<string, unknown> | undefined)?.url as string) ||
-        ((payload?.data as Record<string, unknown> | undefined)?.cover_image as string) ||
-        ""
-    );
+    const s3Link = sanitizeText(extractCoverUploadImageUrl(payload));
     if (!s3Link && VISITOR_IMAGE_UPLOAD_URL) {
-      return { ok: false, url: "", error: "Image upload API did not return an image URL." };
+      return {
+        ok: false,
+        url: "",
+        error:
+          "Image upload succeeded but no image URL was found in the response. Check meetservice response shape or use backend /api/media/upload-cover.",
+      };
     }
     return { ok: true, url: s3Link, error: "" };
   } catch (error) {
@@ -826,13 +856,17 @@ class GateVisitorApiClient {
     };
   }
 
-  private buildVisitorNotificationFormData(
+  /**
+   * Field order matches working Postman/curl for `sendFcmNotification`:
+   * text fields → `file` (multipart binary like `curl --form file=@path`) → `self_check_in` → `is_staff`.
+   */
+  private async buildVisitorNotificationFormData(
     details: ExternalWalkInDetails,
     visitorId: number,
     visitorLogId: number,
     primaryMember: { memberId: number; userId: string; memberMobileNumber: string },
     options: { includeFileField?: boolean } = {}
-  ) {
+  ): Promise<FormData> {
     const includeFileField = options.includeFileField !== false;
     const formData = new FormData();
     const companyId = toPositiveInt(details.companyId) || toPositiveInt(this.companyId);
@@ -856,15 +890,72 @@ class GateVisitorApiClient {
     formData.append("member_id", String(primaryMember.memberId));
     formData.append("purpose_category", String(purposeCategoryId));
     formData.append("visitor_log_id", String(visitorLogId));
-    formData.append("self_check_in", "false");
-    formData.append("is_staff", String(Boolean(details.isStaff ?? false)));
 
-    const photoBlob = visitorPhotoToImageBlob(sanitizeText(details.photo || ""));
-    if (includeFileField && photoBlob) {
-      formData.append("file", photoBlob, "visitor.jpg");
-    }
+    await this.appendSendFcmFileFieldAsync(
+      formData,
+      sanitizeText(details.photo || ""),
+      includeFileField
+    );
+
+    formData.append("self_check_in", "false");
+    formData.append("is_staff", details.isStaff ? "true" : "false");
 
     return formData;
+  }
+
+  /**
+   * Gate expects `file` as a real multipart file part (same as `curl --form file=@image.jpg`).
+   * For HTTPS URLs from upload-cover, fetch bytes in-browser when CORS allows; else fall back to URL string.
+   */
+  private async appendSendFcmFileFieldAsync(
+    formData: FormData,
+    photoRaw: string,
+    includeFileField: boolean
+  ): Promise<void> {
+    if (!includeFileField) {
+      return;
+    }
+    const trimmed = sanitizeText(photoRaw);
+    if (!trimmed) {
+      return;
+    }
+
+    const localBlob = visitorPhotoToImageBlob(trimmed);
+    if (localBlob && localBlob.size > 0) {
+      formData.append("file", localBlob, "visitor.jpg");
+      return;
+    }
+
+    if (isHttpUrl(trimmed)) {
+      try {
+        const res = await fetch(trimmed, { mode: "cors", credentials: "omit", cache: "no-store" });
+        if (res.ok) {
+          const fetched = await res.blob();
+          if (fetched.size > 0) {
+            const name =
+              fetched.type === "image/png" || /\.png(\?|$)/i.test(trimmed) ? "visitor.png" : "visitor.jpg";
+            formData.append("file", fetched, name);
+            return;
+          }
+        }
+      } catch (e) {
+        console.warn("[WalkInSync] FCM: could not fetch photo URL for multipart file; using string", e);
+      }
+      formData.append("file", trimmed);
+      return;
+    }
+
+    const compactB64 = trimmed.replace(/\s/g, "");
+    if (trimmed.startsWith("data:") && trimmed.length > 64) {
+      formData.append("file", trimmed);
+      return;
+    }
+    if (/^[A-Za-z0-9+/=]+$/.test(compactB64) && compactB64.length >= 80) {
+      formData.append("file", trimmed);
+      return;
+    }
+
+    formData.append("file", trimmed);
   }
 
   private buildVisitorLogPayload(details: ExternalWalkInDetails, visitorId: number) {
@@ -1238,7 +1329,7 @@ class GateVisitorApiClient {
       };
     }
 
-    const formData = this.buildVisitorNotificationFormData(details, visitorId, visitorLogId, {
+    const formData = await this.buildVisitorNotificationFormData(details, visitorId, visitorLogId, {
       memberId: primaryMember.memberId,
       userId: primaryMember.userId,
       memberMobileNumber: primaryMember.memberMobileNumber,
@@ -1266,7 +1357,7 @@ class GateVisitorApiClient {
     let messageText = toMessageText(typed?.message);
 
     if (!response.ok && response.status === 400 && /file/i.test(messageText)) {
-      const retryFormData = this.buildVisitorNotificationFormData(
+      const retryFormData = await this.buildVisitorNotificationFormData(
         details,
         visitorId,
         visitorLogId,
@@ -1348,6 +1439,15 @@ function getGateApiClient() {
   return gateApiClient;
 }
 
+/**
+ * Gate walk-in sync (actual order — do not reorder without matching backend contracts):
+ * 1. GET search visitor (phone) → visitor_id if exists
+ * 2. If not found: POST create visitor entry — uploads image inside `addVisitorEntry` → `visitor_image` URL/string
+ * 3. POST visitor log (uses `syncDetails.photo` = posted `visitor_image` when present, for downstream consistency)
+ * 4. POST sendFcmNotification (multipart; `file` after text fields, before self_check_in / is_staff)
+ *
+ * Kiosk journey before this: collect slots → `capture_photo` tool (camera + 5s + JPG) → `save_visitor_info` → local DB save → this sync.
+ */
 export async function syncWalkInDetailsToExternalApis(
   details: ExternalWalkInDetails
 ): Promise<ExternalSyncResult> {
@@ -1375,11 +1475,17 @@ export async function syncWalkInDetailsToExternalApis(
     };
   }
 
-  const addLogResult = await client.addVisitorLog(details, resolvedVisitorId);
+  let syncDetails: ExternalWalkInDetails = { ...details };
+  const postedImage = addResult.requestPayload?.visitor_image;
+  if (isUsableGateVisitorImage(postedImage)) {
+    syncDetails = { ...syncDetails, photo: String(postedImage).trim() };
+  }
+
+  const addLogResult = await client.addVisitorLog(syncDetails, resolvedVisitorId);
   let notificationResult: FieldSyncResult;
   if (addLogResult.ok) {
     notificationResult = await client.sendVisitorNotification(
-      details,
+      syncDetails,
       addLogResult.visitorId || resolvedVisitorId,
       addLogResult.visitorLogId
     );

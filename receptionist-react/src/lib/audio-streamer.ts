@@ -19,6 +19,7 @@ import {
   disconnectRegisteredWorkletsFromOutputs,
   registeredWorklets,
 } from "./audioworklet-registry";
+import { isAudioWorkletAvailable } from "./utils";
 import { perfMark } from "../receptionist/perf-latency";
 
 export interface LipSyncData {
@@ -91,6 +92,16 @@ export class AudioStreamer {
       //throw new Error(`Worklet ${workletName} already exists on context`);
     }
 
+    if (!isAudioWorkletAvailable(this.context)) {
+      const hint = window.isSecureContext
+        ? "This browser does not expose AudioWorklet on this AudioContext."
+        : "Use HTTPS or http://localhost — not plain HTTP on a LAN IP.";
+      console.warn(
+        `[AudioStreamer] AudioWorklet unavailable (${hint}) Skipping "${workletName}"; playback continues without lip-sync / output level.`,
+      );
+      return Promise.resolve(this);
+    }
+
     if (!workletsRecord) {
       registeredWorklets.set(this.context, {});
       workletsRecord = registeredWorklets.get(this.context)!;
@@ -133,6 +144,9 @@ export class AudioStreamer {
   }
 
   addPCM16(chunk: Uint8Array) {
+    if (this.context.state === "suspended") {
+      void this.context.resume();
+    }
     // Reset the stream complete flag when a new chunk is added.
     this.isStreamComplete = false;
     // Process the chunk into a Float32Array

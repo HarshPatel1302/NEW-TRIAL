@@ -1,6 +1,7 @@
 const fs = require("fs/promises");
 const path = require("path");
 const crypto = require("crypto");
+const { resolveMode: resolveHttpFlowLogMode } = require("./http-flow-logger");
 
 const REQUEST_TIMEOUT_MS = 10000;
 const DEFAULT_LOGIN_URL = "https://societybackend.cubeone.in/api/login";
@@ -13,6 +14,15 @@ const VISITOR_PHOTO_STORAGE_DIR =
 
 let accessToken = null;
 let refreshPromise = null;
+
+function coverUploadCliLog(payload) {
+  if (!resolveHttpFlowLogMode()) {
+    return;
+  }
+  console.log(
+    `[cover-upload] ${JSON.stringify({ ts: new Date().toISOString(), ...payload })}`
+  );
+}
 
 function toMessageText(value) {
   if (typeof value === "string") {
@@ -156,10 +166,16 @@ async function loginForToken(loginConfig) {
     const token = extractToken(payload);
 
     if (!response.ok || !token) {
+      coverUploadCliLog({
+        step: "login_failed",
+        httpStatus: response.status,
+        message: toMessageText(payload?.message).slice(0, 200),
+      });
       throw new Error(
         toMessageText(payload?.message) || `Cover upload login failed (HTTP ${response.status})`
       );
     }
+    coverUploadCliLog({ step: "login_ok", httpStatus: response.status });
     accessToken = String(token);
   } finally {
     clearTimeout(timeout);
@@ -176,10 +192,48 @@ async function refreshToken(loginConfig) {
   return refreshPromise;
 }
 
+function extractCoverImageUrlFromPayload(payload) {
+  if (!payload || typeof payload !== "object") return "";
+  const tryStr = (v) => {
+    const s = String(v || "").trim();
+    return /^https?:\/\//i.test(s) ? s : "";
+  };
+  const data = payload.data;
+  if (data && typeof data === "object") {
+    const keys = [
+      "s3_link",
+      "s3Link",
+      "url",
+      "cover_image",
+      "coverImage",
+      "image_url",
+      "imageUrl",
+      "file_url",
+      "fileUrl",
+      "path",
+      "link",
+    ];
+    for (const k of keys) {
+      const hit = tryStr(data[k]);
+      if (hit) return hit;
+    }
+  }
+  for (const k of ["url", "s3_link", "s3Link", "cover_image"]) {
+    const hit = tryStr(payload[k]);
+    if (hit) return hit;
+  }
+  return "";
+}
+
 async function ensureToken({ authToken, loginConfig } = {}) {
   const provided = String(authToken || "").trim();
   if (provided) {
     accessToken = provided;
+    return accessToken;
+  }
+  const staticBearer = String(process.env.COVER_UPLOAD_BEARER_TOKEN || "").trim();
+  if (staticBearer) {
+    accessToken = staticBearer;
     return accessToken;
   }
   if (accessToken) {
@@ -210,6 +264,18 @@ async function uploadFileToCloud({ filePath, fileName, mimeType, authToken, logi
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
   try {
+    coverUploadCliLog({
+      step: "upstream_upload_start",
+      urlHost: (() => {
+        try {
+          return new URL(COVER_UPLOAD_API_URL).host;
+        } catch {
+          return "invalid-url";
+        }
+      })(),
+      fileName,
+      bytes: fileBuffer.length,
+    });
     const response = await fetch(COVER_UPLOAD_API_URL, {
       method: "POST",
       headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -227,15 +293,40 @@ async function uploadFileToCloud({ filePath, fileName, mimeType, authToken, logi
     }
 
     if (!response.ok) {
+      coverUploadCliLog({
+        step: "upstream_upload_http_error",
+        httpStatus: response.status,
+        message: toMessageText(payload?.message).slice(0, 300),
+      });
       throw new Error(
         toMessageText(payload?.message) || `Cover upload failed (HTTP ${response.status})`
       );
     }
 
-    const s3Link = payload?.data?.s3_link || payload?.data?.s3Link || "";
+    const s3Link = extractCoverImageUrlFromPayload(payload);
     if (!s3Link) {
-      throw new Error("Cover upload response missing data.s3_link");
+      coverUploadCliLog({
+        step: "upstream_upload_missing_url",
+        httpStatus: response.status,
+        payloadKeys:
+          payload && typeof payload === "object" ? Object.keys(payload).slice(0, 20) : [],
+      });
+      throw new Error(
+        "Cover upload response missing image URL (expected s3_link, url, or similar in JSON)"
+      );
     }
+
+    coverUploadCliLog({
+      step: "upstream_upload_ok",
+      httpStatus: response.status,
+      s3Host: (() => {
+        try {
+          return new URL(s3Link).host;
+        } catch {
+          return "parse_failed";
+        }
+      })(),
+    });
 
     return {
       s3Link: String(s3Link),
@@ -251,6 +342,12 @@ async function uploadVisitorPhotoAndGetS3Link(photoData, options = {}) {
   const { fileNameHint = "visitor", authToken = "" } = options;
   const loginConfig = resolveLoginConfig(options);
   const persisted = await persistPhotoBuffer(photoData, fileNameHint);
+  coverUploadCliLog({
+    step: "photo_persisted_local",
+    fileName: persisted.fileName,
+    relativePath: persisted.relativePath,
+    mimeType: persisted.mimeType,
+  });
   const uploaded = await uploadFileToCloud({
     ...persisted,
     authToken,

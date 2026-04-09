@@ -1,3 +1,4 @@
+import { DETERMINISTIC_PROMPTS } from "../deterministic-prompts";
 import {
   canCapturePhoto,
   canCreateVisitor,
@@ -9,39 +10,37 @@ import {
 } from "../visitor-flow-machine";
 
 describe("visitor flow machine (new visitor + delivery)", () => {
-  test("ASK_PHONE → ASK_NAME; phone first then name slot", () => {
+  test("ASK_NAME → ASK_PHONE; name first then phone slot", () => {
     let session = createVisitorFlowSession();
     session = { ...session, mode: "new_visitor" };
-    session = transitionVisitorFlow(session, "ASK_PHONE");
-    expect(session.state).toBe("ASK_PHONE");
-    expect(expectedSlotForState("ASK_PHONE")).toBe("phone");
     session = transitionVisitorFlow(session, "ASK_NAME");
     expect(session.state).toBe("ASK_NAME");
     expect(expectedSlotForState("ASK_NAME")).toBe("visitor_name");
+    session = transitionVisitorFlow(session, "ASK_PHONE");
+    expect(session.state).toBe("ASK_PHONE");
+    expect(expectedSlotForState("ASK_PHONE")).toBe("phone");
     expect(promptForState("ASK_PHONE")).toMatch(/phone/i);
     expect(promptForState("ASK_NAME")).toMatch(/name/i);
   });
 
-  test("new visitor happy path through optional person to photo", () => {
+  test("new visitor happy path: name → phone → coming from → company → photo (no person step)", () => {
     let session: VisitorFlowSession = { ...createVisitorFlowSession(), mode: "new_visitor" };
-    session = transitionVisitorFlow(session, "ASK_PHONE");
     session = transitionVisitorFlow(session, "ASK_NAME");
+    session = transitionVisitorFlow(session, "ASK_PHONE");
     session = transitionVisitorFlow(session, "ASK_COMING_FROM");
     session = transitionVisitorFlow(session, "ASK_COMPANY");
-    session = transitionVisitorFlow(session, "ASK_PERSON");
     session = transitionVisitorFlow(session, "CAPTURE_PHOTO");
     expect(session.state).toBe("CAPTURE_PHOTO");
-    expect(expectedSlotForState("ASK_PERSON")).toBe("meeting_with");
     expect(canCapturePhoto(session)).toBe(true);
   });
 
-  test("new visitor must pass through ASK_PERSON before photo (optional person step)", () => {
+  test("ASK_COMPANY → CAPTURE_PHOTO is valid (company then photo)", () => {
     let session: VisitorFlowSession = { ...createVisitorFlowSession(), mode: "new_visitor" };
-    session = transitionVisitorFlow(session, "ASK_PHONE");
     session = transitionVisitorFlow(session, "ASK_NAME");
+    session = transitionVisitorFlow(session, "ASK_PHONE");
     session = transitionVisitorFlow(session, "ASK_COMING_FROM");
     session = transitionVisitorFlow(session, "ASK_COMPANY");
-    expect(() => transitionVisitorFlow(session, "CAPTURE_PHOTO")).toThrow(/Invalid visitor flow transition/);
+    expect(() => transitionVisitorFlow(session, "CAPTURE_PHOTO")).not.toThrow();
   });
 
   test("delivery happy path through photo", () => {
@@ -75,28 +74,17 @@ describe("visitor flow machine (new visitor + delivery)", () => {
     expect(canCreateVisitor({ ...base, mode: "delivery", photoUploaded: true })).toBe(false);
   });
 
-  test("photo step prompt is the 5-second receptionist line (Gemini voice, not browser TTS)", () => {
+  test("CAPTURE_PHOTO has no deterministic slot prompt; photo line is in kiosk JSON + capture_photo tool", () => {
     const p = promptForState("CAPTURE_PHOTO") || "";
-    expect(p).toContain("5 seconds");
-    expect(p).toContain("capture your photo");
+    expect(p).toBe("");
   });
 
-  test("optional person prompt is a plain question without if-you-know softeners", () => {
-    const p = (promptForState("ASK_PERSON") || "").toLowerCase();
-    expect(p).toContain("person");
-    expect(p).not.toContain("if you know");
-    expect(p).not.toContain("that's okay");
+  test("lobby success copy matches product spec", () => {
+    expect(DETERMINISTIC_PROMPTS.lobbyWait).toContain("Please wait at the lobby");
   });
 
   test("deterministic visitor prompts contain no returning / welcome-back wording", () => {
-    const states = [
-      "ASK_PHONE",
-      "ASK_NAME",
-      "ASK_COMING_FROM",
-      "ASK_COMPANY",
-      "ASK_PERSON",
-      "CAPTURE_PHOTO",
-    ] as const;
+    const states = ["ASK_PHONE", "ASK_NAME", "ASK_COMING_FROM", "ASK_COMPANY"] as const;
     for (const st of states) {
       const p = (promptForState(st, "Alex") || "").toLowerCase();
       expect(p).not.toContain("welcome again");

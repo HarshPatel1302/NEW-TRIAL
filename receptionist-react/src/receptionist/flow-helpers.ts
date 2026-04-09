@@ -49,7 +49,7 @@ export function hasVisitorPersonOrUnitSlot(value: unknown): boolean {
 
 export type VisitorMissingField = "name" | "phone" | "came_from";
 
-/** Core mandatory visitor slots (person to meet is optional and not included here). */
+/** Core mandatory visitor slots for photo/save gates (name, phone, came_from; company checked separately). */
 export function getVisitorFlowMissingSlots(collectedSlots: Record<string, string>): VisitorMissingField[] {
   const missing: VisitorMissingField[] = [];
   if (!hasMeaningfulValue(collectedSlots.visitor_name) && !hasMeaningfulValue(collectedSlots.name)) {
@@ -154,7 +154,6 @@ export function getMissingFieldsBeforePhoto(
     if (!hasMeaningfulValue(collectedSlots.visit_company) && !hasMeaningfulValue(collectedSlots.company)) {
       missing.push("visit_company");
     }
-    // Person to meet is optional for new visitors; flow state still asks once, but photo/save gates do not block on it.
   }
 
   return { flow, missing };

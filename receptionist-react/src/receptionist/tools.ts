@@ -22,7 +22,7 @@ export const TOOLS: Tool[] = [
             {
                 name: "collect_slot_value",
                 description:
-                    "Call every time the user provides a slot value. Record one field per call. Visitor flow order: phone, then visitor_name, then came_from, then visit_company, then optional meeting_with (if unknown, call meeting_with with a short phrase like \"don't know\" — do not ask yes/no). Delivery: visitor_name, delivery_company, recipient_company, recipient_name. Obey KIOSK_STATE_JSON next_required_slot when it disagrees with your guess. If the user gave multiple values in one utterance, call this tool once per slot (same turn when possible).",
+                    "Call every time the user provides a slot value. Record one field per call. New visitor order: visitor_name, then phone, then came_from, then visit_company — then capture_photo (do not collect meeting_with for new visitors). Delivery: visitor_name, delivery_company, recipient_company, recipient_name. After visit_company (visitor) or recipient_name (delivery), tool responses include next_required_tool capture_photo and a short ack — speak the 5-second photo line only when calling capture_photo. Obey KIOSK_STATE_JSON next_required_slot, phase, next_required_tool. Do not call this with short confirmations (e.g. yes) as slot values when phase is photo. If the user gave multiple values in one utterance, call this tool once per slot (same turn when possible).",
                 parameters: {
                     type: "OBJECT",
                     properties: {
@@ -71,7 +71,8 @@ export const TOOLS: Tool[] = [
             },
             {
                 name: "save_visitor_info",
-                description: "Save the complete visitor's information to the database after all required slots are collected and a visitor photo has been captured.",
+                description:
+                    "Save visitor or delivery check-in after all required slots are collected and capture_photo succeeded when required. If the tool returns need_more_info with missing_fields company_directory_match or visit_company_resolution, the visitor already named a company — ask for spelling, unit, or which directory option matches; do not ask which company they are visiting as if unanswered. visit_company means the slot is still empty. Retry save after resolving directory or refining visit_company.",
                 parameters: {
                     type: "OBJECT",
                     properties: {
@@ -106,7 +107,7 @@ export const TOOLS: Tool[] = [
             {
                 name: "capture_photo",
                 description:
-                    "After all required details for the flow are collected, say in your receptionist voice exactly: \"Please wait 5 seconds while I capture your photo.\" Then call this tool immediately (same turn when possible). The kiosk opens the camera, waits, and saves a JPEG. Only if this tool returns status success may you say the photo was taken. If status is error, ask the visitor to allow camera permission and call capture_photo again. Do not use browser text-to-speech.",
+                    "After all required details for the flow are collected, say in your receptionist voice exactly: \"Please wait 5 seconds while I capture your photo.\" Then call this tool immediately (same turn when possible). The kiosk opens the camera, waits, and saves a JPEG in-session. On success: do NOT describe the image or claim S3/cloud upload — immediately call save_visitor_info (or delivery approval chain). Only if this tool returns status success may you briefly confirm the camera step; never invent upload/S3 details. If status is error, ask the visitor to allow camera permission and call capture_photo again. Do not use browser text-to-speech.",
                 parameters: {
                     type: "OBJECT",
                     properties: {},

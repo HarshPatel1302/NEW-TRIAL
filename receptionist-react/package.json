@@ -25,9 +25,11 @@
   },
   "scripts": {
     "start-https": "HTTPS=true react-scripts start",
+    "start:tunnel": "env DANGEROUSLY_DISABLE_HOST_CHECK=true WDS_SOCKET_PORT=443 HOST=0.0.0.0 PORT=3000 BROWSER=none react-scripts start",
     "start": "react-scripts start",
     "build": "react-scripts build",
     "test": "react-scripts test",
+    "test:e2e": "npm run build && playwright test",
     "eject": "react-scripts eject"
   },
   "eslintConfig": {
@@ -49,6 +51,7 @@
     ]
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
     "@testing-library/jest-dom": "^5.17.0",
     "@testing-library/react": "^13.4.0",
     "@testing-library/user-event": "^13.5.0",
@@ -58,10 +61,12 @@
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@types/react-syntax-highlighter": "^15.5.13",
+    "serve": "^14.2.4",
     "ts-node": "^10.9.2",
     "typescript": "^5.6.3"
   },
   "overrides": {
     "typescript": "^5.6.3"
-  }
+  },
+  "proxy": "http://127.0.0.1:5050"
 }

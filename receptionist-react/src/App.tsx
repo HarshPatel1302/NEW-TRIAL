@@ -16,6 +16,7 @@
 
 import { EndSensitivity, Modality, StartSensitivity } from "@google/genai";
 import { useRef, useState, useEffect, useCallback } from "react";
+import { flushSync } from "react-dom";
 import "./App.scss";
 import { LiveAPIProvider, useLiveAPIContext } from "./contexts/LiveAPIContext";
 import Avatar3D, { Avatar3DRef } from "./components/Avatar3D/Avatar3D";
@@ -24,12 +25,16 @@ import { LiveClientOptions } from "./types";
 import { KIOSK_STATE_AUTHORITY, RECEPTIONIST_PERSONA } from "./receptionist/config";
 import { RECEPTIONIST_COMPACT_SYSTEM } from "./receptionist/system-compact";
 import { isKioskGateProxyEnabled, kioskBackendWarmup, kioskBatchLookup } from "./receptionist/kiosk-backend-gate";
-import { pushKioskRuntimeStateJson } from "./receptionist/kiosk-runtime-push";
+import {
+  createKioskPushDedupeState,
+  pushKioskRuntimeStateJson,
+} from "./receptionist/kiosk-runtime-push";
 import { DETERMINISTIC_PROMPTS } from "./receptionist/deterministic-prompts";
 import {
   bumpPlaybackEpoch,
   getPlaybackEpoch,
   acceptAssistantModelText,
+  releaseAssistantOutputGate,
   resetSessionPlaybackEpoch,
 } from "./receptionist/kiosk-playback-epoch";
 import { TOOLS } from "./receptionist/tools";
@@ -41,6 +46,10 @@ import {
   warmupVisitorAuth,
 } from "./receptionist/external-visitor-sync";
 import { requestDeliveryApproval } from "./receptionist/delivery-approval";
+import { gateCollectSlotInLateFlowPhase } from "./receptionist/collect-slot-late-phase";
+import { buildCollectSlotPromptHints } from "./receptionist/collect-slot-tool-result";
+import { captureStateCoercionTarget } from "./receptionist/capture-flow-recovery";
+import { resolveMembersForDestinationWithRetries } from "./receptionist/kiosk-lookup-retry";
 import {
   decodeMembersFromNotes,
   encodeMembersForNotes,
@@ -48,12 +57,21 @@ import {
   resolveMembersForDestination,
   type MemberLookupResult,
 } from "./receptionist/member-directory";
+import {
+  classifyVisitorCompanyDirectoryForSave,
+} from "./receptionist/save-visitor-company-resolution";
+import { kioskSessionTrace } from "./receptionist/kiosk-debug-trace";
+import {
+  coerceVisitCompanySlotForNewVisitor,
+  mergeVisitCompanyWithUnit,
+} from "./receptionist/visitor-company-unit";
 import { waitForFaceCaptureReadiness } from "./receptionist/face-capture-readiness";
 import { defaultCompactSystemEnabled } from "./receptionist/kiosk-runtime-defaults";
 import {
   getKioskToolPhotoCountdownMs,
   getPhotoFaceMaxWaitMs,
 } from "./receptionist/photo-kiosk-config";
+import { kioskPhotoCaptureFlagsRef } from "./receptionist/kiosk-photo-capture-flags";
 import { perfEndTurn, perfLog, perfMark, perfSetAssumedSilenceMs } from "./receptionist/perf-latency";
 import { perfRecordScenario } from "./receptionist/perf-summary";
 import purposeCatalog from "./receptionist/purpose.json";
@@ -132,6 +150,12 @@ function toPhoneDigits(value: unknown) {
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** After flushSync stops the mic, brief pause so the audio device can release before camera opens. */
+function getKioskMicReleaseBeforeCameraMs(): number {
+  const v = Number(process.env.REACT_APP_KIOSK_MIC_RELEASE_BEFORE_CAMERA_MS);
+  return Number.isFinite(v) && v >= 0 ? Math.min(2000, Math.round(v)) : 80;
 }
 
 /** Wait until video dimensions are stable (reduces blank-frame capture after countdown). */
@@ -249,6 +273,10 @@ function mergeCollectedSlotValue(slotName: string, incomingValue: unknown, exist
     return `${existingDigits}${incomingDigits}`.slice(0, 10);
   }
 
+  if (slotName === "visit_company") {
+    return mergeVisitCompanyWithUnit(existingRaw, incomingRaw);
+  }
+
   return incomingRaw;
 }
 
@@ -333,10 +361,20 @@ function findPurposeCategoryMatch(value: unknown) {
   return null;
 }
 
+/** If Live drops briefly while the kiosk camera is opening, allow longer reconnect before ending the DB session. */
+const TRANSIENT_DISCONNECT_MS = 12_000;
+
+function resolveCaptureTransientGraceMs(): number {
+  const v = Number(process.env.REACT_APP_CAPTURE_TRANSIENT_GRACE_MS);
+  return Number.isFinite(v) && v >= 5000 ? Math.min(120_000, Math.round(v)) : 45_000;
+}
+
 function ReceptionistApp() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const avatarRef = useRef<Avatar3DRef>(null);
   const [videoStream, setVideoStream] = useState<MediaStream | null>(null);
+  /** Stops ControlTray mic while kiosk opens camera (avoids dual getUserMedia conflicts). */
+  const [kioskSuspendLiveMicForCapture, setKioskSuspendLiveMicForCapture] = useState(false);
   const [lastAudioText, setLastAudioText] = useState<string>("");
   const [expressionCue, setExpressionCue] = useState<ExpressionCue>("neutral_professional");
   const prevAssistantAudioPlayingRef = useRef(false);
@@ -358,6 +396,10 @@ function ReceptionistApp() {
   const lastAssistantTextDedupeRef = useRef<{ text: string; at: number }>({ text: "", at: 0 });
   const visitorFlowRef = useRef(createVisitorFlowSession());
   const lastRuntimeStateLineRef = useRef("");
+  /** Synchronous dedupe + validation gate for KIOSK_STATE_JSON (avoids stale slot ref + repeat prompts). */
+  const kioskPushDedupeRef = useRef(createKioskPushDedupeState());
+  /** Last non-suppressed next_prompt_exact — suppress model bubble if it only echoes the scripted question. */
+  const lastKioskVerbalPromptRef = useRef("");
 
   const setVisitorFlowState = useCallback((next: VisitorFlowState, reason: string) => {
     try {
@@ -653,11 +695,19 @@ function ReceptionistApp() {
     }
 
     captureInFlightRef.current = true;
+    kioskPhotoCaptureFlagsRef.current = true;
+    flushSync(() => {
+      setKioskSuspendLiveMicForCapture(true);
+    });
     const startedAt = Date.now();
     console.info("[perf] photo_capture_start", { t: startedAt, source, countdown_ms: countdownMs });
     try {
       lastCaptureErrorRef.current = "";
       const activeSessionId = sessionIdRef.current;
+      const releaseMs = getKioskMicReleaseBeforeCameraMs();
+      if (releaseMs > 0) {
+        await sleep(releaseMs);
+      }
       const stream = await openTemporaryCameraStream();
       if (!stream) {
         if (activeSessionId) {
@@ -743,8 +793,12 @@ function ReceptionistApp() {
         duration_ms: Date.now() - startedAt,
         ok: !!visitorCheckInPhotoRef.current,
       });
-      captureInFlightRef.current = false;
       stopCameraPreview();
+      flushSync(() => {
+        setKioskSuspendLiveMicForCapture(false);
+      });
+      kioskPhotoCaptureFlagsRef.current = false;
+      captureInFlightRef.current = false;
     }
   }, [captureVisitorPhotoJpeg, describeCameraAccessError, openTemporaryCameraStream, stopCameraPreview]);
 
@@ -856,7 +910,11 @@ function ReceptionistApp() {
         visitorFlowRef.current = createVisitorFlowSession();
         resetSessionPlaybackEpoch();
         lastRuntimeStateLineRef.current = "";
-        void setVisitorFlowState("ASK_PHONE", "session_connected");
+        kioskPushDedupeRef.current = createKioskPushDedupeState();
+        lastKioskVerbalPromptRef.current = "";
+        void setVisitorFlowState("ASK_NAME", "session_connected");
+        // First flow bump opens a short output gate; release it so the auto-greeting PCM is not dropped.
+        releaseAssistantOutputGate();
         setConversationState({ collectedSlots: {} });
         window.setTimeout(() => {
           pushKioskRuntimeStateJson(
@@ -864,9 +922,14 @@ function ReceptionistApp() {
             visitorFlowRef.current,
             conversationStateRef.current.intent,
             getPlaybackEpoch(),
-            lastRuntimeStateLineRef
+            lastRuntimeStateLineRef,
+            {
+              collectedSlots: conversationStateRef.current.collectedSlots || {},
+              dedupe: kioskPushDedupeRef.current,
+              lastVerbalPromptMirror: lastKioskVerbalPromptRef,
+            }
           );
-        }, 320);
+        }, 120);
         hasSavedVisitorRef.current = false;
         hasPersistedSecuritySnapshotRef.current = false;
         sessionPhotoRef.current = null;
@@ -886,6 +949,13 @@ function ReceptionistApp() {
         if (transientDisconnectTimerRef.current) {
           clearTimeout(transientDisconnectTimerRef.current);
         }
+        const disconnectGraceMs = captureInFlightRef.current
+          ? Math.max(TRANSIENT_DISCONNECT_MS, resolveCaptureTransientGraceMs())
+          : TRANSIENT_DISCONNECT_MS;
+        console.warn("[VisitorFlow] live disconnected; session held for possible reconnect", {
+          grace_ms: disconnectGraceMs,
+          capture_in_flight: captureInFlightRef.current,
+        });
         transientDisconnectTimerRef.current = setTimeout(() => {
           transientDisconnectTimerRef.current = null;
           if (connected) return;
@@ -920,7 +990,7 @@ function ReceptionistApp() {
             sessionPhotoRef.current = null;
             visitorCheckInPhotoRef.current = null;
           })();
-        }, 12000);
+        }, disconnectGraceMs);
       } else {
         visitorFlowRef.current = createVisitorFlowSession();
         if (endSessionResetTimerRef.current) {
@@ -1070,6 +1140,11 @@ function ReceptionistApp() {
       if (!text) return;
 
       const now = Date.now();
+      const mirror = lastKioskVerbalPromptRef.current.trim().toLowerCase();
+      const tnorm = text.trim().toLowerCase();
+      if (mirror.length >= 8 && tnorm === mirror) {
+        return;
+      }
       const dedupe = lastAssistantTextDedupeRef.current;
       if (dedupe.text === text && now - dedupe.at < 2800) {
         return;
@@ -1120,6 +1195,14 @@ function ReceptionistApp() {
     const onToolCall = async (toolCall: any) => {
       console.log("Tool Call:", toolCall);
       const responses = [];
+      const applyCollectDedupeGate = (res: { status?: string }) => {
+        if (res.status === "need_more_info") kioskPushDedupeRef.current.validationGate = true;
+        else if (res.status === "success" || res.status === "ignored") {
+          kioskPushDedupeRef.current.validationGate = false;
+        }
+      };
+      /** Intent after this batch (classify_intent updates synchronously; React ref may lag). */
+      let intentAfterBatch = conversationStateRef.current.intent;
       /** Keeps slot reads correct when multiple collect_slot_value calls arrive in one tool batch (ref lags setState). */
       let collectedSlotsScratch: Record<string, string> = {
         ...conversationStateRef.current.collectedSlots,
@@ -1145,6 +1228,7 @@ function ReceptionistApp() {
         try {
           if (name === "classify_intent") {
             const normalizedIntent = normalizeIntentName(args.detected_intent);
+            intentAfterBatch = normalizedIntent;
             setConversationState(prev => ({
               ...prev,
               intent: normalizedIntent
@@ -1171,7 +1255,7 @@ function ReceptionistApp() {
                 mode: "new_visitor",
               };
               if (visitorFlowRef.current.state === "IDLE" || visitorFlowRef.current.state === "MODE_SELECTED") {
-                void setVisitorFlowState("ASK_PHONE", "intent_non_delivery_selected");
+                void setVisitorFlowState("ASK_NAME", "intent_non_delivery_selected");
               }
             }
 
@@ -1188,10 +1272,38 @@ function ReceptionistApp() {
           else if (name === "collect_slot_value") {
             const normalizedIncomingSlotName = normalizeSlotName(args.slot_name);
             const expectedSlot = expectedSlotForState(visitorFlowRef.current.state);
-            const slotName =
+            let slotName =
               expectedSlot === "visit_company" && normalizedIncomingSlotName === "meeting_with"
                 ? "visit_company"
                 : normalizedIncomingSlotName;
+            const rawSlotValueEarly = String(args.value || "").trim();
+            const visitCompanyExisting = String(
+              collectedSlotsScratch.visit_company || collectedSlotsScratch.company || ""
+            ).trim();
+            const coerceVisit = coerceVisitCompanySlotForNewVisitor({
+              mode: visitorFlowRef.current.mode,
+              normalizedSlot: slotName,
+              value: rawSlotValueEarly,
+              expectedSlot,
+              visitCompanyExisting,
+            });
+            slotName = coerceVisit.slotName;
+            // #region agent log
+            kioskSessionTrace(activeSessionId, "kiosk_collect_slot_request", {
+              hypothesisId: "H_cap_expected_null_unit",
+              runId: "debug",
+              tool: "collect_slot_value",
+              flowState: visitorFlowRef.current.state,
+              mode: visitorFlowRef.current.mode,
+              expectedSlot,
+              rawSlotName: String(args.slot_name ?? ""),
+              normalizedIncomingSlotName,
+              slotNameAfterCoerce: slotName,
+              coerced: coerceVisit.coerced,
+              coerceReason: coerceVisit.reason ?? null,
+              valueCharLen: rawSlotValueEarly.length,
+            });
+            // #endregion
             const disallowedSlotNames = [
               "department",
               "purpose",
@@ -1207,40 +1319,33 @@ function ReceptionistApp() {
                   "This field is not required. Collect only the active flow details before photo capture.",
               };
             } else {
-            const rawSlotValueEarly = String(args.value || "").trim();
-            if (
-              slotName === "meeting_with" &&
-              visitorFlowRef.current.mode === "new_visitor" &&
-              visitorFlowRef.current.state === "ASK_PERSON" &&
-              isExplicitUnknownPerson(rawSlotValueEarly)
-            ) {
-              visitorFlowRef.current = {
-                ...visitorFlowRef.current,
-                personToMeet: undefined,
-              };
-              void setVisitorFlowState("CAPTURE_PHOTO", "visitor_optional_person_unknown");
-              setConversationState((prev) => ({
-                ...prev,
-                collectedSlots: {
-                  ...prev.collectedSlots,
-                  meeting_with: "",
-                },
-              }));
-              collectedSlotsScratch = {
-                ...collectedSlotsScratch,
-                meeting_with: "",
-              };
+            if (slotName === "meeting_with" && visitorFlowRef.current.mode === "new_visitor") {
               result = {
-                status: "success",
+                status: "ignored",
                 slot: slotName,
-                value: "",
-                next_prompt: promptForState(
-                  visitorFlowRef.current.state,
-                  visitorFlowRef.current.visitorName
-                ),
                 message:
-                  "Optional person not specified. Proceed to capture_photo when the visitor is ready.",
+                  "New visitor check-in does not collect person-to-meet. Collect only name, phone, came_from, and visit_company, then capture_photo.",
               };
+              applyCollectDedupeGate(result);
+              responses.push({
+                name: name,
+                id: fc.id,
+                response: { result },
+              });
+              continue;
+            }
+            const lateCollectGate = gateCollectSlotInLateFlowPhase(
+              visitorFlowRef.current.state,
+              visitorFlowRef.current.mode,
+              slotName
+            );
+            if (!lateCollectGate.allowed) {
+              result = {
+                status: "ignored",
+                slot: slotName,
+                message: lateCollectGate.message,
+              };
+              applyCollectDedupeGate(result);
               responses.push({
                 name: name,
                 id: fc.id,
@@ -1259,6 +1364,7 @@ function ReceptionistApp() {
                 expected_slot: expectedSlot,
                 message: promptForState(visitorFlowRef.current.state, visitorFlowRef.current.visitorName),
               };
+              applyCollectDedupeGate(result);
               responses.push({
                 name: name,
                 id: fc.id,
@@ -1293,12 +1399,33 @@ function ReceptionistApp() {
                 visitorId: null,
                 visitorCreated: false,
               };
-              // Product order: phone → name → coming_from → company → optional person → photo.
-              void setVisitorFlowState("ASK_NAME", "phone_captured_ask_name");
+              void setVisitorFlowState("ASK_COMING_FROM", "phone_captured_ask_coming_from");
               console.info("[VisitorFlow] phone captured", {
                 phone: normalizedPhoneValue,
-                next: "ASK_NAME",
+                next: "ASK_COMING_FROM",
               });
+            } else if (
+              slotName === "phone" &&
+              !phoneInvalid &&
+              !phoneNeedsMoreDigits &&
+              isValidIndianMobile(normalizedPhoneValue) &&
+              visitorFlowRef.current.mode !== "delivery" &&
+              visitorFlowRef.current.state === "ASK_NAME"
+            ) {
+              visitorFlowRef.current = {
+                ...visitorFlowRef.current,
+                phoneNumber: slotValue,
+                normalizedPhoneNumber: normalizedPhoneValue,
+                mode: "new_visitor",
+                visitorId: null,
+                visitorCreated: false,
+              };
+              const nameOk =
+                hasMeaningfulValue(visitorFlowRef.current.visitorName) ||
+                hasMeaningfulValue(collectedSlotsScratch.visitor_name);
+              if (nameOk) {
+                void setVisitorFlowState("ASK_COMING_FROM", "name_and_phone_complete_from_name_step");
+              }
             } else if (slotName === "phone" && !phoneInvalid && !phoneNeedsMoreDigits) {
               visitorFlowRef.current = {
                 ...visitorFlowRef.current,
@@ -1317,9 +1444,6 @@ function ReceptionistApp() {
               : null;
             if (slotName === "visitor_name" && visitorFlowRef.current.state === "ASK_PHONE") {
               visitorFlowRef.current = { ...visitorFlowRef.current, visitorName: slotValue };
-            }
-            if (slotName === "visitor_name" && visitorFlowRef.current.state === "ASK_NAME") {
-              visitorFlowRef.current = { ...visitorFlowRef.current, visitorName: slotValue };
               const phoneDigitsNow = toPhoneDigits(
                 collectedSlotsScratch.phone ||
                   visitorFlowRef.current.normalizedPhoneNumber ||
@@ -1331,8 +1455,12 @@ function ReceptionistApp() {
                 isValidIndianMobile(normalizeIndianMobile(phoneDigitsNow));
               void setVisitorFlowState(
                 phoneOk ? "ASK_COMING_FROM" : "ASK_PHONE",
-                phoneOk ? "name_captured_have_phone" : "captured_new_visitor_name_need_phone"
+                phoneOk ? "flex_name_while_asking_phone_complete" : "flex_name_while_asking_phone_need_phone"
               );
+            }
+            if (slotName === "visitor_name" && visitorFlowRef.current.state === "ASK_NAME") {
+              visitorFlowRef.current = { ...visitorFlowRef.current, visitorName: slotValue };
+              void setVisitorFlowState("ASK_PHONE", "name_captured_ask_phone");
             }
             if (slotName === "visitor_name" && visitorFlowRef.current.state === "DELIVERY_ASK_NAME") {
               visitorFlowRef.current = { ...visitorFlowRef.current, deliveryPersonName: slotValue };
@@ -1362,7 +1490,7 @@ function ReceptionistApp() {
             if (slotName === "visit_company") {
               visitorFlowRef.current = { ...visitorFlowRef.current, companyToVisit: slotValue };
               if (visitorFlowRef.current.state === "ASK_COMPANY") {
-                void setVisitorFlowState("ASK_PERSON", "captured_new_visitor_company");
+                void setVisitorFlowState("CAPTURE_PHOTO", "captured_new_visitor_company_ready_photo");
               }
             }
             const shouldResolveMemberDestination = [
@@ -1448,11 +1576,6 @@ function ReceptionistApp() {
               };
               if (currentFlowState === "DELIVERY_ASK_RECIPIENT_PERSON") {
                 void setVisitorFlowState("DELIVERY_CAPTURE_PHOTO", "delivery_target_person_collected");
-              } else if (visitorFlowRef.current.mode === "new_visitor" && currentFlowState === "ASK_PERSON") {
-                void setVisitorFlowState("CAPTURE_PHOTO", "visitor_person_collected");
-                console.info("[VisitorFlow] visitor person step done; next photo", {
-                  memberIds: matchedMemberIds,
-                });
               } else if (hasMember) {
                 void setVisitorFlowState("FETCH_MEMBER_LIST", "destination_collected");
                 void setVisitorFlowState("RESOLVE_DESTINATION", "member_resolved_from_destination");
@@ -1530,14 +1653,23 @@ function ReceptionistApp() {
               });
             }
 
+            const collectPromptHints = buildCollectSlotPromptHints({
+              slotName,
+              flowState: visitorFlowRef.current.state,
+              mode: visitorFlowRef.current.mode,
+              visitorName: visitorFlowRef.current.visitorName,
+            });
             result = {
               status: "success",
               slot: slotName,
               value: slotValue,
-              next_prompt: promptForState(
-                visitorFlowRef.current.state,
-                visitorFlowRef.current.visitorName
-              ),
+              next_prompt: collectPromptHints.next_prompt,
+              ...(collectPromptHints.next_required_tool
+                ? { next_required_tool: collectPromptHints.next_required_tool }
+                : {}),
+              ...(collectPromptHints.model_behavior
+                ? { model_behavior: collectPromptHints.model_behavior }
+                : {}),
               ...(phoneNeedsMoreDigits
                 ? {
                     partial_phone: true,
@@ -1662,6 +1794,21 @@ function ReceptionistApp() {
                 conversationStateRef.current.collectedSlots.visit_company ||
                 (!isDeliveryIntent ? conversationStateRef.current.collectedSlots.company || "" : "")
               ).trim();
+            // #region agent log
+            kioskSessionTrace(activeSessionId, "kiosk_save_visitor_request", {
+              hypothesisId: "H_save_path",
+              runId: "debug",
+              tool: "save_visitor_info",
+              flowState: visitorFlowRef.current.state,
+              mode: visitorFlowRef.current.mode,
+              isDeliveryIntent,
+              intentResolved: resolvedIntent,
+              nameLen: String(resolvedName).length,
+              phoneDigitsLen: normalizedPhone.length,
+              visitCompanyLen: String(resolvedVisitCompany).length,
+              hasLocalPhoto: Boolean(visitorCheckInPhotoRef.current),
+            });
+            // #endregion
             let finalMeetingWith = isDeliveryIntent
               ? String(resolvedRecipientName || resolvedMeetingWith || "N/A").trim()
               : String(resolvedMeetingWith || "N/A").trim();
@@ -1830,19 +1977,30 @@ function ReceptionistApp() {
               }
             }
             if (!isDeliveryIntent && resolvedMemberObjects.length > 1) {
-              const options = resolvedMemberObjects
-                .slice(0, 2)
-                .map((member) => {
-                  const unit = member.building_unit || member.unit_flat_number || "unknown unit";
-                  return `${member.unit_member_name || member.member_name} in ${unit}`;
-                })
-                .join(" or ");
-              result = {
-                status: "need_more_info",
-                missing_fields: ["meeting_with"],
-                message: `I found multiple matches. Are you visiting ${options}?`,
-              };
-            } else {
+              const matchCount = resolvedMemberObjects.length;
+              const picked = resolvedMemberObjects[0];
+              resolvedMemberObjects = [picked];
+              resolvedMemberIdsCsv = String(picked.member_id);
+              resolvedMemberObjectsEncoded = encodeMembersForNotes(resolvedMemberObjects);
+              if (!resolvedMemberLookupQuery.trim()) {
+                resolvedMemberLookupQuery =
+                  memberLookupPrimaryQuery || memberLookupSecondaryQuery || resolvedMemberLookupQuery;
+              }
+              setConversationState((prev) => ({
+                ...prev,
+                collectedSlots: {
+                  ...prev.collectedSlots,
+                  member_ids: resolvedMemberIdsCsv,
+                  member_lookup_query: resolvedMemberLookupQuery,
+                  member_match_count: "1",
+                  member_objects_uri: resolvedMemberObjectsEncoded,
+                },
+              }));
+              console.info(
+                "[VisitorFlow] new visitor: multiple directory matches before save; using top-ranked match (no verbal disambiguation)",
+                { matchCount, member_id: picked.member_id }
+              );
+            }
             const notesWithPurposeCategory =
               [
                 String(args.notes || "").trim(),
@@ -1935,7 +2093,7 @@ function ReceptionistApp() {
                   message:
                     isDeliveryIntent
                       ? "Collect delivery person name, delivery company, recipient company, and recipient name before saving."
-                      : "Collect phone, name, where you are coming from, and company to visit before saving.",
+                      : "Collect name, phone, where you are coming from, and company to visit before saving.",
                 };
               } else if (!visitorCheckInPhotoRef.current) {
                 result = {
@@ -1966,6 +2124,12 @@ function ReceptionistApp() {
                 const finalPhone = isDeliveryIntent
                   ? (normalizedPhone || "N/A")
                   : normalizedPhone;
+                let directoryDisambiguationResult: {
+                  status: string;
+                  missing_fields: string[];
+                  message: string;
+                } | null = null;
+
                 if (
                   visitorFlowRef.current.mode === "new_visitor" &&
                   !canCreateVisitor(visitorFlowRef.current)
@@ -1977,28 +2141,153 @@ function ReceptionistApp() {
                       "Photo is still required. Call capture_photo — the kiosk will capture once the camera view is ready.",
                   };
                 } else if (!resolvedMemberObjects.length) {
-                  const companyOnlyLookup = await resolveMembersForDestination(
-                    resolvedVisitCompany || conversationStateRef.current.collectedSlots.visit_company || "",
+                  const companyQuery = String(
+                    !isDeliveryIntent
+                      ? resolvedVisitCompany ||
+                          conversationStateRef.current.collectedSlots.visit_company ||
+                          ""
+                      : resolvedVisitCompany ||
+                          conversationStateRef.current.collectedSlots.recipient_company ||
+                          ""
+                  ).trim();
+
+                  const { result: companyOnlyLookup } = await resolveMembersForDestinationWithRetries(
+                    companyQuery,
                     {
-                      secondaryQuery: "",
+                      secondaryQuery: !isDeliveryIntent ? String(resolvedCameFrom || "").trim() : "",
                       maxResults: 5,
                       searchMode: "company",
                     }
                   );
                   if (companyOnlyLookup.ok && companyOnlyLookup.matchedMembers.length > 0) {
-                    resolvedMemberObjects = companyOnlyLookup.matchedMembers;
-                    resolvedMemberIdsCsv = companyOnlyLookup.memberIds.join(",");
+                    if (!isDeliveryIntent) {
+                      const classified = classifyVisitorCompanyDirectoryForSave({
+                        resolvedVisitCompany: companyQuery,
+                        matchedMembers: companyOnlyLookup.matchedMembers,
+                      });
+                      if (classified.kind === "need_disambiguation") {
+                        directoryDisambiguationResult = {
+                          status: "need_more_info",
+                          missing_fields: [...classified.missing_fields],
+                          message: classified.message,
+                        };
+                        // #region agent log
+                        kioskSessionTrace(activeSessionId, "kiosk_save_company_disambiguation", {
+                          hypothesisId: "H_disambiguation_tool_result",
+                          runId: "debug",
+                          candidateCount: companyOnlyLookup.matchedMembers.length,
+                          companyQueryLen: companyQuery.length,
+                          flowState: visitorFlowRef.current.state,
+                        });
+                        // #endregion
+                        const encodedCandidates = encodeMembersForNotes(
+                          companyOnlyLookup.matchedMembers
+                        );
+                        setConversationState((prev) => ({
+                          ...prev,
+                          collectedSlots: {
+                            ...prev.collectedSlots,
+                            company_resolution_candidates_uri: encodedCandidates,
+                            company_resolution_query: companyQuery,
+                          },
+                        }));
+                        if (activeSessionId) {
+                          void DatabaseManager.logSessionEvent(activeSessionId, {
+                            role: "system",
+                            eventType: "save_visitor_company_ambiguous",
+                            content: JSON.stringify({
+                              query: companyQuery,
+                              candidate_count: companyOnlyLookup.matchedMembers.length,
+                              member_ids: companyOnlyLookup.memberIds.slice(0, 8),
+                            }),
+                          });
+                        }
+                      } else if (classified.kind === "proceed") {
+                        resolvedMemberObjects = classified.members;
+                        resolvedMemberIdsCsv = classified.members.map((m) => String(m.member_id)).join(",");
+                      }
+                    } else {
+                      resolvedMemberObjects = companyOnlyLookup.matchedMembers;
+                      resolvedMemberIdsCsv = companyOnlyLookup.memberIds.join(",");
+                    }
                   }
                 }
 
-                if (!resolvedMemberObjects.length) {
-                  result = {
-                    status: "need_more_info",
-                    missing_fields: ["visit_company"],
-                    message:
-                      "I could not resolve the destination company or host. Please tell me the exact company in Cyber One.",
-                  };
+                if (directoryDisambiguationResult) {
+                  result = directoryDisambiguationResult;
+                } else if (!resolvedMemberObjects.length) {
+                  const visitorCompanySpoken = String(
+                    resolvedVisitCompany || conversationStateRef.current.collectedSlots.visit_company || ""
+                  ).trim();
+                  if (!isDeliveryIntent && hasMeaningfulValue(visitorCompanySpoken)) {
+                    const fb = classifyVisitorCompanyDirectoryForSave({
+                      resolvedVisitCompany: visitorCompanySpoken,
+                      matchedMembers: [],
+                    });
+                    if (fb.kind === "need_directory_match" || fb.kind === "need_slot") {
+                      result = {
+                        status: "need_more_info",
+                        missing_fields: [...fb.missing_fields],
+                        message: fb.message,
+                      };
+                      if (activeSessionId && fb.kind === "need_directory_match") {
+                        void DatabaseManager.logSessionEvent(activeSessionId, {
+                          role: "system",
+                          eventType: "save_visitor_company_directory_miss",
+                          content: JSON.stringify({
+                            visit_company: visitorCompanySpoken,
+                            missing_fields: fb.missing_fields,
+                          }),
+                        });
+                      }
+                    } else {
+                      result = {
+                        status: "need_more_info",
+                        missing_fields: ["company_directory_match"],
+                        message:
+                          "The company name is not in our directory. Ask the visitor to spell it as listed in Cyber One, or provide a unit number.",
+                      };
+                      if (activeSessionId) {
+                        void DatabaseManager.logSessionEvent(activeSessionId, {
+                          role: "system",
+                          eventType: "save_visitor_company_directory_miss",
+                          content: JSON.stringify({
+                            visit_company: visitorCompanySpoken,
+                            missing_fields: ["company_directory_match"],
+                            reason: "classify_fallback",
+                          }),
+                        });
+                      }
+                    }
+                  } else {
+                    result = {
+                      status: "need_more_info",
+                      missing_fields: ["visit_company"],
+                      message:
+                        "I could not resolve the destination company or host. Please tell me the exact company in Cyber One.",
+                    };
+                  }
                 } else {
+                  setConversationState((prev) => ({
+                    ...prev,
+                    collectedSlots: {
+                      ...prev.collectedSlots,
+                      company_resolution_candidates_uri: "",
+                      company_resolution_query: "",
+                    },
+                  }));
+                  resolvedMemberObjectsEncoded = encodeMembersForNotes(resolvedMemberObjects);
+                  if (isDeliveryIntent && resolvedMemberObjects.length > 1) {
+                    const matchCount = resolvedMemberObjects.length;
+                    const picked = resolvedMemberObjects[0];
+                    resolvedMemberObjects = [picked];
+                    resolvedMemberIdsCsv = String(picked.member_id);
+                    resolvedMemberObjectsEncoded = encodeMembersForNotes(resolvedMemberObjects);
+                    console.info(
+                      "[VisitorFlow] delivery: multiple matches after company lookup; using top-ranked match",
+                      { matchCount, member_id: picked.member_id }
+                    );
+                  }
                   let localVisitorId = "";
                   if (visitorFlowRef.current.mode === "new_visitor") {
                     void setVisitorFlowState("SAVE_VISITOR", "creating_new_visitor_record");
@@ -2154,7 +2443,6 @@ function ReceptionistApp() {
                   }
                 }
               }
-            }
           }
           else if (name === "route_to_department") {
             setExpressionCue("explaining_confident");
@@ -2471,7 +2759,7 @@ function ReceptionistApp() {
                 message:
                   photoReadiness.flow === "delivery"
                     ? "Collect delivery person name, delivery company, recipient company, and recipient name before photo capture."
-                    : "Collect phone, name, where they came from, and company in Cyber One before photo capture.",
+                    : "Collect name, phone, where they came from, and company in Cyber One before photo capture.",
               };
             } else {
               const captureState =
@@ -2479,23 +2767,42 @@ function ReceptionistApp() {
                   ? "DELIVERY_CAPTURE_PHOTO"
                   : "CAPTURE_PHOTO";
               if (visitorFlowRef.current.state !== captureState) {
+                const coerceTarget = captureStateCoercionTarget(
+                  visitorFlowRef.current.state,
+                  photoReadiness.flow
+                );
+                if (coerceTarget) {
+                  void setVisitorFlowState(coerceTarget, "capture_photo_coerce_slots_ready");
+                }
+              }
+              if (visitorFlowRef.current.state !== captureState) {
                 const moved = setVisitorFlowState(captureState, "capture_photo_started");
                 if (!moved) {
                   result = {
                     status: "error",
                     message:
-                      "Could not start photo capture due to an internal flow state error. Try collect_slot_value for the current step, then capture_photo again.",
+                      "Could not start photo capture due to an internal flow state error. Ask the visitor to continue, or restart check-in from name if the issue persists.",
                   };
                   responses.push({ name: name, id: fc.id, response: { result } });
                   continue;
                 }
               }
               const countdownMs = getKioskToolPhotoCountdownMs();
-              const captured = await captureCheckInPhotoAfterCountdown(
+              let captured = await captureCheckInPhotoAfterCountdown(
                 "tool_call_photo_capture",
                 countdownMs
               );
-              const jpegReady = Boolean(visitorCheckInPhotoRef.current);
+              let jpegReady = Boolean(visitorCheckInPhotoRef.current);
+              const captureAutoRetry =
+                String(process.env.REACT_APP_CAPTURE_PHOTO_AUTO_RETRY || "").trim() === "1";
+              if (captureAutoRetry && (!captured || !jpegReady)) {
+                await new Promise((r) => setTimeout(r, 450));
+                captured = await captureCheckInPhotoAfterCountdown(
+                  "tool_call_photo_capture_retry",
+                  countdownMs
+                );
+                jpegReady = Boolean(visitorCheckInPhotoRef.current);
+              }
               if (captured && jpegReady) {
                 visitorFlowRef.current = {
                   ...visitorFlowRef.current,
@@ -2511,8 +2818,11 @@ function ReceptionistApp() {
                 console.info("[VisitorFlow] photo capture completed in tool handler");
                 result = {
                   status: "success",
-                  message: "Photo captured successfully. Call save_visitor_info next.",
+                  message:
+                    "Photo captured locally as JPEG. Next: call save_visitor_info immediately. Do not describe the image, do not mention S3 or upload success until save_visitor_info returns success.",
                   format: "image/jpeg",
+                  next_required_tool: "save_visitor_info",
+                  photo_stored_in_session: true,
                 };
               } else {
                 const detail = lastCaptureErrorRef.current?.trim() || "Camera did not return a usable image.";
@@ -2525,7 +2835,20 @@ function ReceptionistApp() {
             }
           }
         } catch (e: any) {
+          // #region agent log
+          kioskSessionTrace(activeSessionId, "kiosk_tool_handler_error", {
+            hypothesisId: "H_tool_throw",
+            runId: "debug",
+            tool: name,
+            errMessage: String(e?.message ?? e),
+            errName: e?.name ? String(e.name) : null,
+          });
+          // #endregion
           result = { error: e.message };
+        }
+
+        if (name === "collect_slot_value") {
+          applyCollectDedupeGate(result);
         }
 
         responses.push({
@@ -2572,9 +2895,14 @@ function ReceptionistApp() {
       pushKioskRuntimeStateJson(
         client,
         visitorFlowRef.current,
-        conversationStateRef.current.intent,
+        intentAfterBatch,
         getPlaybackEpoch(),
-        lastRuntimeStateLineRef
+        lastRuntimeStateLineRef,
+        {
+          collectedSlots: collectedSlotsScratch,
+          dedupe: kioskPushDedupeRef.current,
+          lastVerbalPromptMirror: lastKioskVerbalPromptRef,
+        }
       );
       perfEndTurn("tool_batch_complete");
     };
@@ -2613,6 +2941,7 @@ function ReceptionistApp() {
           supportsVideo={false}
           onVideoStreamChange={setVideoStream}
           enableEditingSettings={false}
+          kioskSuspendLiveMic={kioskSuspendLiveMicForCapture}
         />
       </div>
 

@@ -30,8 +30,9 @@ describe("photo-kiosk-config", () => {
     expect(getPhotoFaceMaxWaitMs(1200)).toBeLessThanOrEqual(5200);
   });
 
-  test("voice line matches product copy", () => {
-    expect(KIOSK_PHOTO_VOICE_LINE).toContain("5 seconds");
-    expect(KIOSK_PHOTO_VOICE_LINE.toLowerCase()).toContain("capture your photo");
+  test("voice line is exact required wording", () => {
+    expect(KIOSK_PHOTO_VOICE_LINE).toBe(
+      "Please wait 5 seconds while I capture your photo."
+    );
   });
 });

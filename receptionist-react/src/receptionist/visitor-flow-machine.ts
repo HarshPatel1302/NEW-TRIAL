@@ -53,15 +53,14 @@ export type VisitorFlowSession = {
 };
 
 const ALLOWED: Record<VisitorFlowState, VisitorFlowState[]> = {
-  IDLE: ["MODE_SELECTED", "ASK_PHONE", "DELIVERY_ASK_NAME", "ERROR"],
-  MODE_SELECTED: ["ASK_PHONE", "DELIVERY_ASK_NAME", "ERROR"],
-  // CAPTURE_PHOTO: allow jump when mandatory slots are already complete (tool gates via getMissingFieldsBeforePhoto).
-  // Visitor check-in order: phone → name → coming from → company → optional person (once) → photo.
-  ASK_PHONE: ["ASK_NAME", "CAPTURE_PHOTO", "ERROR"],
-  ASK_NAME: ["ASK_COMING_FROM", "CAPTURE_PHOTO", "ERROR"],
+  IDLE: ["MODE_SELECTED", "ASK_NAME", "DELIVERY_ASK_NAME", "ERROR"],
+  MODE_SELECTED: ["ASK_NAME", "DELIVERY_ASK_NAME", "ERROR"],
+  // Visitor check-in order: name → phone → coming from → company → photo (no person-to-meet step).
+  ASK_NAME: ["ASK_PHONE", "CAPTURE_PHOTO", "ERROR"],
+  ASK_PHONE: ["ASK_COMING_FROM", "CAPTURE_PHOTO", "ERROR"],
   ASK_COMING_FROM: ["ASK_COMPANY", "CAPTURE_PHOTO", "ERROR"],
-  // Always go through ASK_PERSON so the optional person question is asked once; unknown/skip is handled in the tool layer.
-  ASK_COMPANY: ["ASK_PERSON", "ERROR"],
+  ASK_COMPANY: ["CAPTURE_PHOTO", "ERROR"],
+  /** Legacy state — not used in the current new-visitor path. */
   ASK_PERSON: ["CAPTURE_PHOTO", "ERROR"],
   CAPTURE_PHOTO: ["UPLOAD_PHOTO", "ERROR"],
   UPLOAD_PHOTO: ["SAVE_VISITOR", "ERROR"],
@@ -77,7 +76,7 @@ const ALLOWED: Record<VisitorFlowState, VisitorFlowState[]> = {
   CREATE_VISITOR_LOG: ["SEND_NOTIFICATION", "ERROR"],
   SEND_NOTIFICATION: ["COMPLETED", "ERROR"],
   COMPLETED: [],
-  ERROR: ["ASK_PHONE", "DELIVERY_ASK_NAME"],
+  ERROR: ["ASK_NAME", "DELIVERY_ASK_NAME"],
 };
 
 export function createVisitorFlowSession(): VisitorFlowSession {

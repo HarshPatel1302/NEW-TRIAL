@@ -19,7 +19,33 @@ import AudioRecordingWorklet from "./worklets/audio-processing";
 import VolMeterWorket from "./worklets/vol-meter";
 
 import { createWorketFromSrc } from "./audioworklet-registry";
+import { isAudioWorkletAvailable } from "./utils";
 import EventEmitter from "eventemitter3";
+
+/** User-visible explanation for mic / AudioWorklet failures (also used in tests). */
+export function formatMicrophoneStartError(err: unknown): string {
+  if (err instanceof Error && err.message.includes("AudioWorklet")) {
+    return err.message;
+  }
+  const dom = err as { name?: string; message?: string };
+  const name = String(dom?.name || "");
+  if (name === "NotAllowedError" || name === "PermissionDeniedError") {
+    return "Microphone access was blocked. Allow microphone for this site (lock icon in the address bar), then disconnect and connect again.";
+  }
+  if (name === "NotFoundError" || name === "DevicesNotFoundError") {
+    return "No microphone was found. Plug in or enable a microphone in system settings.";
+  }
+  if (name === "NotReadableError" || name === "TrackStartError" || name === "AbortError") {
+    return "The microphone could not be opened. It may be in use by another application—close other apps using the mic and try again.";
+  }
+  if (name === "OverconstrainedError" || name === "ConstraintNotSatisfiedError") {
+    return "Your microphone does not support the requested settings. Try another input device.";
+  }
+  if (err instanceof Error && err.message.trim()) {
+    return err.message;
+  }
+  return "Could not start the microphone. Check permissions and try connecting again.";
+}
 
 function arrayBufferToBase64(buffer: ArrayBuffer) {
   var binary = "";
@@ -45,15 +71,47 @@ export class AudioRecorder extends EventEmitter {
     super();
   }
 
-  async start() {
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      throw new Error("Could not request user media");
+  /**
+   * Acquires the mic and starts the worklet pipeline. Must be awaited or `.catch()`'d —
+   * failures include permission denied, no device, and non-secure contexts without AudioWorklet.
+   */
+  start(): Promise<void> {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      return Promise.reject(new Error("This browser does not support microphone capture."));
     }
 
-    this.starting = new Promise(async (resolve, reject) => {
-      this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    if (this.starting) {
+      return this.starting;
+    }
+
+    this.starting = this.runStartPipeline();
+    return this.starting;
+  }
+
+  private async runStartPipeline(): Promise<void> {
+    try {
+      try {
+        this.stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            channelCount: 1,
+          },
+        });
+      } catch (first) {
+        console.warn("[AudioRecorder] getUserMedia with constraints failed, retrying default audio", first);
+        this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      }
+
       this.audioContext = await audioContext({ sampleRate: this.sampleRate });
       this.source = this.audioContext.createMediaStreamSource(this.stream);
+
+      if (!isAudioWorkletAvailable(this.audioContext)) {
+        this.teardownPartialMicGraph();
+        throw new Error(
+          "AudioWorklet is not available in this browser context. Serve the kiosk over HTTPS (or open via http://localhost). Plain HTTP on a LAN IP (e.g. http://192.168.x.x) cannot use the microphone pipeline.",
+        );
+      }
 
       const workletName = "audio-recorder-worklet";
       const src = createWorketFromSrc(workletName, AudioRecordingWorklet);
@@ -68,7 +126,6 @@ export class AudioRecorder extends EventEmitter {
         if (!this.recording) {
           return;
         }
-        // worklet processes recording floats and messages converted buffer
         const arrayBuffer = ev.data.data.int16arrayBuffer;
 
         if (arrayBuffer) {
@@ -78,7 +135,6 @@ export class AudioRecorder extends EventEmitter {
       };
       this.source.connect(this.recordingWorklet);
 
-      // vu meter worklet
       const vuWorkletName = "vu-meter";
       await this.audioContext.audioWorklet.addModule(
         createWorketFromSrc(vuWorkletName, VolMeterWorket),
@@ -93,14 +149,30 @@ export class AudioRecorder extends EventEmitter {
 
       this.source.connect(this.vuWorklet);
       this.recording = true;
-      resolve();
+    } catch (e) {
+      this.teardownPartialMicGraph();
+      throw new Error(formatMicrophoneStartError(e));
+    } finally {
       this.starting = null;
-    });
+    }
+  }
+
+  private teardownPartialMicGraph() {
+    try {
+      this.source?.disconnect();
+    } catch {
+      /* ignore */
+    }
+    this.stream?.getTracks().forEach((track) => track.stop());
+    this.stream = undefined;
+    this.audioContext = undefined;
+    this.source = undefined;
+    this.recordingWorklet = undefined;
+    this.vuWorklet = undefined;
+    this.recording = false;
   }
 
   stop() {
-    // its plausible that stop would be called before start completes
-    // such as if the websocket immediately hangs up
     const handleStop = () => {
       this.recording = false;
       if (this.recordingWorklet) {
@@ -114,9 +186,13 @@ export class AudioRecorder extends EventEmitter {
       this.stream = undefined;
       this.recordingWorklet = undefined;
       this.vuWorklet = undefined;
+      this.source = undefined;
+      this.audioContext = undefined;
     };
     if (this.starting) {
-      this.starting.then(handleStop);
+      void this.starting.then(handleStop).catch(() => {
+        handleStop();
+      });
       return;
     }
     handleStop();

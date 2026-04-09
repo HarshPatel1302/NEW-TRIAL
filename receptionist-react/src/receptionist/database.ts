@@ -1,3 +1,5 @@
+import { resolveReceptionistApiBaseUrl } from '../lib/receptionist-api-base';
+
 export interface Visitor {
     id: string;
     name: string;
@@ -41,7 +43,6 @@ type SessionEventPayload = {
 
 export class DatabaseManager {
     private static STORAGE_KEY = 'greenscape_visitors';
-    private static API_BASE = process.env.REACT_APP_RECEPTIONIST_API_URL || 'http://localhost:5050/api';
     private static API_KEY = process.env.REACT_APP_RECEPTIONIST_API_KEY || '';
     private static KIOSK_ID = process.env.REACT_APP_KIOSK_ID || '';
     private static REQUEST_TIMEOUT_MS = 7000;
@@ -214,7 +215,7 @@ export class DatabaseManager {
                 headers.set('x-kiosk-id', this.KIOSK_ID);
             }
 
-            const response = await fetch(`${this.API_BASE}${path}`, {
+            const response = await fetch(`${resolveReceptionistApiBaseUrl()}${path}`, {
                 ...init,
                 headers,
                 signal: controller.signal,
@@ -244,7 +245,7 @@ export class DatabaseManager {
             ) {
                 DatabaseManager.backendUnreachableLogged = true;
                 console.warn(
-                    `[DatabaseManager] Cannot reach backend at ${DatabaseManager.API_BASE}. ` +
+                    `[DatabaseManager] Cannot reach backend at ${resolveReceptionistApiBaseUrl()}. ` +
                         'Using local visitor cache until the API is up. Start backend: ' +
                         'cd backend && docker compose up -d && npm run dev'
                 );

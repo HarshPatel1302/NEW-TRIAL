@@ -16,8 +16,10 @@ export const DETERMINISTIC_PROMPTS = {
   askRecipientPerson: "What is the name of the person at that company the parcel is for?",
   /** Spoken by receptionist (Gemini) right before kiosk opens camera + 5s wait. */
   photoPose: KIOSK_PHOTO_VOICE_LINE,
+  /** After last pre-photo slot is committed — not the camera line (that belongs with capture_photo). */
+  postSlotBeforePhotoAck: "Thank you.",
   lobbyWait:
-    "Please have a seat in the lobby while your approval request is being sent.",
+    "Please wait at the lobby. Someone will contact you shortly.",
 } as const;
 
 /**
@@ -49,7 +51,8 @@ export function deterministicPromptForVisitorState(
       return DETERMINISTIC_PROMPTS.askRecipientPerson;
     case "CAPTURE_PHOTO":
     case "DELIVERY_CAPTURE_PHOTO":
-      return DETERMINISTIC_PROMPTS.photoPose;
+      /** Photo line is spoken only with capture_photo tool; kiosk JSON uses phase + next_required_tool. */
+      return null;
     default:
       return null;
   }

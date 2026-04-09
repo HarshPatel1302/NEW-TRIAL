@@ -16,6 +16,7 @@
 
 import { MutableRefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { GenAILiveClient } from "../lib/genai-live-client";
+import { kioskPhotoCaptureFlagsRef } from "../receptionist/kiosk-photo-capture-flags";
 import { LiveClientOptions } from "../types";
 import { AudioStreamer, LipSyncData } from "../lib/audio-streamer";
 import { cancelKioskLocalSpeech } from "../receptionist/local-cue-speech";
@@ -169,11 +170,18 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
     const onSetupComplete = () => {
       console.log("Setup complete — connection ready");
       hasEverConnectedRef.current = true;
+      void audioStreamerRef.current?.resume().catch((e) => {
+        console.warn("[useLiveAPI] Audio output context resume after setup failed", e);
+      });
       setConnected(true);
     };
 
     const onClose = (event: CloseEvent) => {
-      console.log("Connection closed", { code: event?.code, reason: event?.reason });
+      console.warn("[useLiveAPI] Connection closed", {
+        code: event?.code,
+        reason: event?.reason,
+        duringKioskPhotoCapture: kioskPhotoCaptureFlagsRef.current,
+      });
       setConnected(false);
       setAssistantAudioPlaying(false);
       assistantAudioPlayingRef.current = false;
@@ -203,7 +211,16 @@ export function useLiveAPI(options: LiveClientOptions): UseLiveAPIResults {
       if (!acceptAssistantPcmChunk()) {
         return;
       }
-      audioStreamerRef.current?.addPCM16(new Uint8Array(data));
+      const streamer = audioStreamerRef.current;
+      if (!streamer) {
+        return;
+      }
+      if (streamer.context.state === "suspended") {
+        void streamer.resume().catch((e) => {
+          console.warn("[useLiveAPI] Audio output resume on first PCM failed", e);
+        });
+      }
+      streamer.addPCM16(new Uint8Array(data));
     };
 
     client

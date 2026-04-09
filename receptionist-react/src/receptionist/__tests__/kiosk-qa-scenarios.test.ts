@@ -13,19 +13,17 @@ import {
 } from "../visitor-flow-machine";
 
 describe("QA Scenario A — new visitor slot order (state machine)", () => {
-  test("phone → name → coming from → company → person → photo", () => {
+  test("name → phone → coming from → company → photo", () => {
     let s = createVisitorFlowSession();
     s = { ...s, mode: "new_visitor" };
-    s = transitionVisitorFlow(s, "ASK_PHONE");
-    expect(expectedSlotForState("ASK_PHONE")).toBe("phone");
     s = transitionVisitorFlow(s, "ASK_NAME");
     expect(expectedSlotForState("ASK_NAME")).toBe("visitor_name");
+    s = transitionVisitorFlow(s, "ASK_PHONE");
+    expect(expectedSlotForState("ASK_PHONE")).toBe("phone");
     s = transitionVisitorFlow(s, "ASK_COMING_FROM");
     expect(expectedSlotForState("ASK_COMING_FROM")).toBe("came_from");
     s = transitionVisitorFlow(s, "ASK_COMPANY");
     expect(expectedSlotForState("ASK_COMPANY")).toBe("visit_company");
-    s = transitionVisitorFlow(s, "ASK_PERSON");
-    expect(expectedSlotForState("ASK_PERSON")).toBe("meeting_with");
     s = transitionVisitorFlow(s, "CAPTURE_PHOTO");
     expect(s.state).toBe("CAPTURE_PHOTO");
   });

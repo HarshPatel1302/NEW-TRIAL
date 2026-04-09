@@ -11,16 +11,13 @@ import {
   defaultKioskGateProxyEnabled,
   explicitKioskProxyRequested,
 } from "./kiosk-runtime-defaults";
+import { resolveReceptionistApiBaseUrl } from "../lib/receptionist-api-base";
 import { perfRecordSummary } from "./perf-summary";
 
 function onlyDigitsPhone(input: string): string {
   return String(input || "").replace(/\D/g, "");
 }
 
-const API_BASE = String(process.env.REACT_APP_RECEPTIONIST_API_URL || "http://localhost:5050/api").replace(
-  /\/+$/,
-  ""
-);
 const API_KEY = String(process.env.REACT_APP_RECEPTIONIST_API_KEY || "").trim();
 
 export function isKioskGateProxyEnabled(): boolean {
@@ -71,7 +68,7 @@ function kioskResponseIndicatesFallback(data: {
 }
 
 async function kioskFetch(path: string, body: Record<string, unknown>): Promise<Response> {
-  return fetch(`${API_BASE}${path}`, {
+  return fetch(`${resolveReceptionistApiBaseUrl()}${path}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -82,7 +79,7 @@ async function kioskFetch(path: string, body: Record<string, unknown>): Promise<
 }
 
 async function kioskGet(path: string): Promise<Response> {
-  return fetch(`${API_BASE}${path}`, {
+  return fetch(`${resolveReceptionistApiBaseUrl()}${path}`, {
     method: "GET",
     headers: {
       "x-api-key": API_KEY,

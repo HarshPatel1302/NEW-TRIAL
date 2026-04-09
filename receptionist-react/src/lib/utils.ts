@@ -62,6 +62,14 @@ export const audioContext: (
   };
 })();
 
+/**
+ * AudioWorklet (and thus addModule) is only exposed in secure contexts in Chromium-based
+ * browsers. Plain HTTP on a LAN IP (e.g. http://192.168.x.x) leaves audioWorklet undefined.
+ */
+export function isAudioWorkletAvailable(context: BaseAudioContext): boolean {
+  return typeof context.audioWorklet?.addModule === "function";
+}
+
 export function base64ToArrayBuffer(base64: string) {
   var binaryString = atob(base64);
   var bytes = new Uint8Array(binaryString.length);

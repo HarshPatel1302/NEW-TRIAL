@@ -44,6 +44,11 @@ export type ControlTrayProps = {
   supportsVideo: boolean;
   onVideoStreamChange?: (stream: MediaStream | null) => void;
   enableEditingSettings?: boolean;
+  /**
+   * Kiosk: release the mic pipeline before opening a second getUserMedia(camera) stream.
+   * Many devices mute or kill the mic (and sometimes destabilize Live) if both run at once.
+   */
+  kioskSuspendLiveMic?: boolean;
 };
 
 type MediaStreamButtonProps = {
@@ -76,6 +81,7 @@ function ControlTray({
   onVideoStreamChange = () => {},
   supportsVideo,
   enableEditingSettings,
+  kioskSuspendLiveMic = false,
 }: ControlTrayProps) {
   const videoStreams = [useWebcam(), useScreenCapture()];
   const [activeVideoStream, setActiveVideoStream] =
@@ -163,7 +169,9 @@ function ControlTray({
         },
       ]);
     };
-    if (connected && !muted && audioRecorder) {
+    const shouldCaptureMic =
+      connected && !muted && audioRecorder && !kioskSuspendLiveMic;
+    if (shouldCaptureMic) {
       audioRecorder.on("data", onData).on("volume", setInVolume).start();
     } else {
       audioRecorder.stop();
@@ -171,10 +179,13 @@ function ControlTray({
     return () => {
       audioRecorder.off("data", onData).off("volume", setInVolume);
     };
-  }, [connected, client, muted, audioRecorder, notifyUserMicActivity]);
+  }, [connected, client, muted, audioRecorder, notifyUserMicActivity, kioskSuspendLiveMic]);
 
   useEffect(() => {
-    if (videoRef.current) {
+    // Kiosk (`supportsVideo={false}`) uses the same `videoRef` for temporary photo capture.
+    // Never bind or clear `srcObject` here — otherwise any effect re-run (e.g. `connected`
+    // toggling during reconnect) wipes the capture stream right as the camera opens.
+    if (supportsVideo && videoRef.current) {
       videoRef.current.srcObject = activeVideoStream;
     }
 
@@ -210,7 +221,7 @@ function ControlTray({
     return () => {
       clearTimeout(timeoutId);
     };
-  }, [connected, activeVideoStream, client, videoRef]);
+  }, [connected, activeVideoStream, client, videoRef, supportsVideo]);
 
   useEffect(() => {
     if (!activeVideoStream) {
@@ -269,10 +280,14 @@ function ControlTray({
       }
       return null;
     });
-    onVideoStreamChange(null);
+    // Kiosk uses App-owned temporary camera streams; do not clear parent video state here.
+    // A brief Live disconnect would call setVideoStream(null) while capture is still running.
+    if (supportsVideo) {
+      onVideoStreamChange(null);
+    }
     webcam.stop();
     screenCapture.stop();
-  }, [connected, onVideoStreamChange, webcam, screenCapture]);
+  }, [connected, onVideoStreamChange, webcam, screenCapture, supportsVideo]);
 
   useEffect(() => {
     let cancelled = false;

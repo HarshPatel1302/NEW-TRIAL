@@ -80,6 +80,7 @@ function buildAuditMiddleware() {
       crypto.randomUUID();
 
     res.setHeader("x-request-id", requestId);
+    req.flowRequestId = requestId;
 
     res.on("finish", () => {
       if (req.path.startsWith("/api/health")) {

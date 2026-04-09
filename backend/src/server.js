@@ -9,6 +9,7 @@ const {
   buildRateLimiter,
   buildAuditMiddleware,
 } = require("./middleware");
+const { buildHttpFlowLogger, resolveMode: resolveHttpFlowLogMode } = require("./http-flow-logger");
 
 dotenv.config();
 
@@ -36,6 +37,7 @@ app.use(cors({ origin: corsOrigin }));
 app.use(express.json({ limit: "1mb" }));
 app.use(buildRateLimiter());
 app.use(buildAuditMiddleware());
+app.use(buildHttpFlowLogger());
 
 // This process is the JSON API only — the React kiosk runs separately (e.g. CRA on port 3000).
 app.get("/", (_req, res) => {
@@ -804,4 +806,10 @@ mountKioskGateRoutes(app);
 
 app.listen(PORT, () => {
   console.log(`Receptionist backend listening on http://localhost:${PORT}`);
+  const flowMode = resolveHttpFlowLogMode();
+  if (flowMode) {
+    console.log(
+      `[api-flow] CLI request/response logging enabled (mode=${flowMode}). Set BACKEND_HTTP_LOG=0 to disable, or verbose for full redacted bodies.`
+    );
+  }
 });

@@ -44,7 +44,8 @@ export function bumpPlaybackEpoch(reason: string): number {
   if (reason === "user_barge_in") {
     outputGateUntilPerfMs = now + 280;
   } else if (reason.startsWith("flow:")) {
-    outputGateUntilPerfMs = now + 90;
+    // Short gate: only to drop PCM already in flight from a superseded turn; avoid eating the next reply.
+    outputGateUntilPerfMs = now + 40;
   } else {
     outputGateUntilPerfMs = now;
   }
@@ -69,6 +70,10 @@ export function acceptAssistantPcmChunk(): boolean {
   const now = nowPerf();
   if (now < outputGateUntilPerfMs) {
     return false;
+  }
+  // Recover from rare desync (e.g. ordering vs. invalidate) so we do not drop all audio permanently.
+  if (utteranceAnchorEpoch !== null && utteranceAnchorEpoch !== playbackEpoch) {
+    utteranceAnchorEpoch = playbackEpoch;
   }
   if (utteranceAnchorEpoch === null) {
     utteranceAnchorEpoch = playbackEpoch;
